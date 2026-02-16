@@ -29,17 +29,6 @@ struct FeedbackEntry:
     isRevoked: bool
 
 
-struct FeedbackResult:
-    agentId: uint256
-    clientAddress: address
-    feedbackIndex: uint64
-    value: int128
-    valueDecimals: uint8
-    tag1: String[TAG_MAX]
-    tag2: String[TAG_MAX]
-    isRevoked: bool
-
-
 event NewFeedback:
     agentId: indexed(uint256)
     clientAddress: indexed(address)
@@ -89,12 +78,16 @@ _clients: HashMap[uint256, DynArray[address, ARRAY_RETURN_MAX]]
 _is_client: HashMap[uint256, HashMap[address, bool]]
 
 
-# @dev Response count per feedback entry: agentId → clientAddress → feedbackIndex → count.
-_response_count: HashMap[uint256, HashMap[address, HashMap[uint64, uint64]]]
+# @dev Response count per responder: agentId → clientAddress → feedbackIndex → responder → count.
+_response_count: HashMap[uint256, HashMap[address, HashMap[uint64, HashMap[address, uint64]]]]
 
 
-# @dev Whether a responder has already responded to a feedback entry.
-_has_responded: HashMap[uint256, HashMap[address, HashMap[uint64, HashMap[address, bool]]]]
+# @dev List of unique responders per feedback entry.
+_responders: HashMap[uint256, HashMap[address, HashMap[uint64, DynArray[address, ARRAY_RETURN_MAX]]]]
+
+
+# @dev Whether a responder is already tracked in the _responders list.
+_responder_exists: HashMap[uint256, HashMap[address, HashMap[uint64, HashMap[address, bool]]]]
 
 
 @deploy
@@ -220,26 +213,24 @@ def appendResponse(
     feedbackIndex: uint64,
     responseURI: String[LINK_MAX] = "",
     responseHash: bytes32 = empty(bytes32),
-    tag: String[TAG_MAX] = "",
 ):
     """
     @dev Appends a response to a feedback entry. Anyone can respond,
-         but each address may only respond once per feedback entry.
-    @notice The `tag` parameter is emitted in the event for off-chain
-            indexing but is not stored on-chain.
+         and the same responder may respond multiple times.
     @param agentId The agent the feedback was given for.
     @param clientAddress The address that submitted the feedback.
     @param feedbackIndex The 1-based index of the feedback entry.
-    @param responseURI URI pointing to off-chain response content (optional).
+    @param responseURI URI pointing to off-chain response content.
     @param responseHash keccak256 of content at responseURI (optional).
-    @param tag Tag for categorisation, event-only (optional).
     """
     assert feedbackIndex > 0 and feedbackIndex <= self._last_index[agentId][clientAddress], "ReputationRegistry: feedback does not exist"
-    assert not self._feedback[agentId][clientAddress][feedbackIndex].isRevoked, "ReputationRegistry: feedback is revoked"
-    assert not self._has_responded[agentId][clientAddress][feedbackIndex][msg.sender], "ReputationRegistry: already responded"
+    assert len(responseURI) > 0, "ReputationRegistry: empty URI"
 
-    self._has_responded[agentId][clientAddress][feedbackIndex][msg.sender] = True
-    self._response_count[agentId][clientAddress][feedbackIndex] += 1
+    if not self._responder_exists[agentId][clientAddress][feedbackIndex][msg.sender]:
+        self._responders[agentId][clientAddress][feedbackIndex].append(msg.sender)
+        self._responder_exists[agentId][clientAddress][feedbackIndex][msg.sender] = True
+
+    self._response_count[agentId][clientAddress][feedbackIndex][msg.sender] += 1
 
     log ResponseAppended(
         agentId=agentId,
@@ -251,29 +242,64 @@ def appendResponse(
     )
 
 
+@internal
+@view
+def _count_responses(
+    agentId: uint256,
+    clientAddress: address,
+    feedbackIndex: uint64,
+    responders: DynArray[address, FILTER_ARRAY_MAX],
+) -> uint64:
+    """
+    @dev Counts responses for a single feedback entry, optionally
+         filtered by responders.
+    """
+    count: uint64 = 0
+    if len(responders) == 0:
+        for r: address in self._responders[agentId][clientAddress][feedbackIndex]:
+            count += self._response_count[agentId][clientAddress][feedbackIndex][r]
+    else:
+        for r: address in responders:
+            count += self._response_count[agentId][clientAddress][feedbackIndex][r]
+    return count
+
+
 @external
 @view
-def getResponseCount(agentId: uint256, clientAddress: address, feedbackIndex: uint64) -> uint64:
+def getResponseCount(
+    agentId: uint256,
+    clientAddress: address,
+    feedbackIndex: uint64,
+    responders: DynArray[address, FILTER_ARRAY_MAX] = [],
+) -> uint64:
     """
-    @dev Returns the number of responses for a feedback entry.
+    @dev Returns the total number of responses, with flexible aggregation.
+         - clientAddress == address(0): count across all clients.
+         - feedbackIndex == 0: count across all feedback for the client.
+         - responders == []: count from all responders.
     @param agentId The agent the feedback was given for.
-    @param clientAddress The address that submitted the feedback.
-    @param feedbackIndex The 1-based index of the feedback entry.
+    @param clientAddress The client address (address(0) for all).
+    @param feedbackIndex The feedback index (0 for all).
+    @param responders Responder addresses to filter by (empty = all).
     @return uint64 The response count.
     """
-    return self._response_count[agentId][clientAddress][feedbackIndex]
+    count: uint64 = 0
 
+    if clientAddress == empty(address):
+        for client: address in self._clients[agentId]:
+            last: uint256 = convert(self._last_index[agentId][client], uint256)
+            for i: uint256 in range(last, bound=ARRAY_RETURN_MAX):
+                idx: uint64 = convert(i + 1, uint64)
+                count += self._count_responses(agentId, client, idx, responders)
+    elif feedbackIndex == 0:
+        last: uint256 = convert(self._last_index[agentId][clientAddress], uint256)
+        for i: uint256 in range(last, bound=ARRAY_RETURN_MAX):
+            idx: uint64 = convert(i + 1, uint64)
+            count += self._count_responses(agentId, clientAddress, idx, responders)
+    else:
+        count = self._count_responses(agentId, clientAddress, feedbackIndex, responders)
 
-@internal
-@pure
-def _in_tags(tag: String[TAG_MAX], tags: DynArray[String[TAG_MAX], FILTER_ARRAY_MAX]) -> bool:
-    """
-    @dev Returns True if `tag` is found in `tags`.
-    """
-    for t: String[TAG_MAX] in tags:
-        if t == tag:
-            return True
-    return False
+    return count
 
 
 @external
@@ -294,28 +320,46 @@ def readFeedback(agentId: uint256, clientAddress: address, feedbackIndex: uint64
 @view
 def readAllFeedback(
     agentId: uint256,
-    clients: DynArray[address, FILTER_ARRAY_MAX] = [],
-    tags: DynArray[String[TAG_MAX], FILTER_ARRAY_MAX] = [],
-) -> DynArray[FeedbackResult, ARRAY_RETURN_MAX]:
+    clientAddresses: DynArray[address, FILTER_ARRAY_MAX] = [],
+    tag1: String[TAG_MAX] = "",
+    tag2: String[TAG_MAX] = "",
+    includeRevoked: bool = False,
+) -> (
+    DynArray[address, ARRAY_RETURN_MAX],
+    DynArray[uint64, ARRAY_RETURN_MAX],
+    DynArray[int128, ARRAY_RETURN_MAX],
+    DynArray[uint8, ARRAY_RETURN_MAX],
+    DynArray[String[TAG_MAX], ARRAY_RETURN_MAX],
+    DynArray[String[TAG_MAX], ARRAY_RETURN_MAX],
+    DynArray[bool, ARRAY_RETURN_MAX],
+):
     """
-    @dev Returns all feedback entries for `agentId`, optionally filtered
-         by client addresses and/or tags.
+    @dev Returns all feedback entries for `agentId` as parallel arrays,
+         optionally filtered by client addresses, tags, and revocation status.
     @param agentId The agent to read feedback for.
-    @param clients Client addresses to filter by (empty = all clients).
-    @param tags Tags to filter by (empty = no tag filter). An entry
-           matches if its tag1 OR tag2 is in `tags`.
-    @return DynArray of FeedbackResult structs.
+    @param clientAddresses Client addresses to filter by (empty = all clients).
+    @param tag1 Filter by tag1 (empty = no filter).
+    @param tag2 Filter by tag2 (empty = no filter).
+    @param includeRevoked Whether to include revoked feedback (default False).
+    @return (clients, feedbackIndexes, values, valueDecimals, tag1s, tag2s, revokedStatuses).
     """
-    result: DynArray[FeedbackResult, ARRAY_RETURN_MAX] = []
+    out_clients: DynArray[address, ARRAY_RETURN_MAX] = []
+    out_indexes: DynArray[uint64, ARRAY_RETURN_MAX] = []
+    out_values: DynArray[int128, ARRAY_RETURN_MAX] = []
+    out_decimals: DynArray[uint8, ARRAY_RETURN_MAX] = []
+    out_tag1s: DynArray[String[TAG_MAX], ARRAY_RETURN_MAX] = []
+    out_tag2s: DynArray[String[TAG_MAX], ARRAY_RETURN_MAX] = []
+    out_revoked: DynArray[bool, ARRAY_RETURN_MAX] = []
 
     client_list: DynArray[address, ARRAY_RETURN_MAX] = []
-    if len(clients) == 0:
+    if len(clientAddresses) == 0:
         client_list = self._clients[agentId]
     else:
-        for c: address in clients:
+        for c: address in clientAddresses:
             client_list.append(c)
 
-    has_tag_filter: bool = len(tags) > 0
+    filter_tag1: bool = len(tag1) > 0
+    filter_tag2: bool = len(tag2) > 0
 
     for client: address in client_list:
         last: uint256 = convert(self._last_index[agentId][client], uint256)
@@ -323,81 +367,89 @@ def readAllFeedback(
             idx: uint64 = convert(i + 1, uint64)
             entry: FeedbackEntry = self._feedback[agentId][client][idx]
 
-            if has_tag_filter:
-                if not self._in_tags(entry.tag1, tags) and not self._in_tags(entry.tag2, tags):
-                    continue
+            if not includeRevoked and entry.isRevoked:
+                continue
+            if filter_tag1 and entry.tag1 != tag1:
+                continue
+            if filter_tag2 and entry.tag2 != tag2:
+                continue
 
-            result.append(FeedbackResult(
-                agentId=agentId,
-                clientAddress=client,
-                feedbackIndex=idx,
-                value=entry.value,
-                valueDecimals=entry.valueDecimals,
-                tag1=entry.tag1,
-                tag2=entry.tag2,
-                isRevoked=entry.isRevoked,
-            ))
+            out_clients.append(client)
+            out_indexes.append(idx)
+            out_values.append(entry.value)
+            out_decimals.append(entry.valueDecimals)
+            out_tag1s.append(entry.tag1)
+            out_tag2s.append(entry.tag2)
+            out_revoked.append(entry.isRevoked)
 
-    return result
+    return (out_clients, out_indexes, out_values, out_decimals, out_tag1s, out_tag2s, out_revoked)
 
 
 @external
 @view
 def getSummary(
     agentId: uint256,
-    clients: DynArray[address, FILTER_ARRAY_MAX] = [],
-    tags: DynArray[String[TAG_MAX], FILTER_ARRAY_MAX] = [],
-) -> (int128, uint8, uint64, uint64):
+    clientAddresses: DynArray[address, FILTER_ARRAY_MAX],
+    tag1: String[TAG_MAX] = "",
+    tag2: String[TAG_MAX] = "",
+) -> (uint64, int128, uint8):
     """
-    @dev Aggregates feedback for `agentId`. Sums non-revoked values
-         after normalising to the maximum valueDecimals found.
+    @dev Aggregates feedback for `agentId`. Computes the average of
+         non-revoked values after normalising to 18-decimal WAD precision,
+         then scales the result to the mode (most frequent) valueDecimals.
     @param agentId The agent to summarise.
-    @param clients Client addresses to filter by (empty = all clients).
-    @param tags Tags to filter by (empty = no tag filter).
-    @return (totalValue, maxDecimals, activeCount, revokedCount).
+    @param clientAddresses Client addresses to aggregate (required, non-empty).
+    @param tag1 Filter by tag1 (empty = no filter).
+    @param tag2 Filter by tag2 (empty = no filter).
+    @return (count, summaryValue, summaryValueDecimals).
     """
-    client_list: DynArray[address, ARRAY_RETURN_MAX] = []
-    if len(clients) == 0:
-        client_list = self._clients[agentId]
-    else:
-        for c: address in clients:
-            client_list.append(c)
+    assert len(clientAddresses) > 0, "ReputationRegistry: clientAddresses required"
 
-    has_tag_filter: bool = len(tags) > 0
+    filter_tag1: bool = len(tag1) > 0
+    filter_tag2: bool = len(tag2) > 0
 
-    # Pass 1: collect non-revoked values/decimals, find max, count.
-    values: DynArray[int128, ARRAY_RETURN_MAX] = []
-    decimals_list: DynArray[uint8, ARRAY_RETURN_MAX] = []
-    max_decimals: uint8 = 0
-    active_count: uint64 = 0
-    revoked_count: uint64 = 0
+    # WAD: 18 decimal fixed-point precision for internal math.
+    wad_sum: int256 = 0
+    count: uint64 = 0
 
-    for client: address in client_list:
+    # Track frequency of each valueDecimals (0–18).
+    decimal_counts: uint64[19] = empty(uint64[19])
+
+    for client: address in clientAddresses:
         last: uint256 = convert(self._last_index[agentId][client], uint256)
         for i: uint256 in range(last, bound=ARRAY_RETURN_MAX):
             idx: uint64 = convert(i + 1, uint64)
             entry: FeedbackEntry = self._feedback[agentId][client][idx]
 
-            if has_tag_filter:
-                if not self._in_tags(entry.tag1, tags) and not self._in_tags(entry.tag2, tags):
-                    continue
-
             if entry.isRevoked:
-                revoked_count += 1
-            else:
-                active_count += 1
-                values.append(entry.value)
-                decimals_list.append(entry.valueDecimals)
-                if entry.valueDecimals > max_decimals:
-                    max_decimals = entry.valueDecimals
+                continue
+            if filter_tag1 and entry.tag1 != tag1:
+                continue
+            if filter_tag2 and entry.tag2 != tag2:
+                continue
 
-    # Pass 2: normalise to maxDecimals and sum.
-    total_value: int128 = 0
-    for j: uint256 in range(len(values), bound=ARRAY_RETURN_MAX):
-        scale: uint256 = 10 ** convert(max_decimals - decimals_list[j], uint256)
-        total_value += values[j] * convert(scale, int128)
+            factor: int256 = convert(10 ** convert(18 - entry.valueDecimals, uint256), int256)
+            wad_sum += convert(entry.value, int256) * factor
+            decimal_counts[entry.valueDecimals] += 1
+            count += 1
 
-    return (total_value, max_decimals, active_count, revoked_count)
+    if count == 0:
+        return (0, 0, 0)
+
+    # Find mode (most frequent valueDecimals).
+    mode_decimals: uint8 = 0
+    max_count: uint64 = 0
+    for d: uint256 in range(19):
+        if decimal_counts[d] > max_count:
+            max_count = decimal_counts[d]
+            mode_decimals = convert(d, uint8)
+
+    # Average in WAD, then scale to mode precision.
+    avg_wad: int256 = wad_sum // convert(count, int256)
+    scale_down: int256 = convert(10 ** convert(18 - mode_decimals, uint256), int256)
+    summary_value: int128 = convert(avg_wad // scale_down, int128)
+
+    return (count, summary_value, mode_decimals)
 
 
 @external

@@ -246,13 +246,13 @@ def test_append_response_anyone(reputation_registry, identity_registry):
 
     third_party = boa.env.generate_address()
     with boa.env.prank(third_party):
-        reputation_registry.appendResponse(1, client, 1)
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
 
     assert reputation_registry.getResponseCount(1, client, 1) == 1
 
 
-def test_append_response_no_double(reputation_registry, identity_registry):
-    """Same responder tries twice, second reverts."""
+def test_append_response_same_responder_allowed(reputation_registry, identity_registry):
+    """Same responder can append multiple responses."""
     import boa
 
     identity_registry.register()
@@ -263,9 +263,24 @@ def test_append_response_no_double(reputation_registry, identity_registry):
 
     responder = boa.env.generate_address()
     with boa.env.prank(responder):
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/2")
+
+    assert reputation_registry.getResponseCount(1, client, 1) == 2
+
+
+def test_append_response_empty_uri_reverts(reputation_registry, identity_registry):
+    """appendResponse reverts when responseURI is empty."""
+    import boa
+
+    identity_registry.register()
+
+    client = boa.env.generate_address()
+    with boa.env.prank(client):
+        reputation_registry.giveFeedback(1, 50, 0)
+
+    with boa.reverts("ReputationRegistry: empty URI"):
         reputation_registry.appendResponse(1, client, 1)
-        with boa.reverts("ReputationRegistry: already responded"):
-            reputation_registry.appendResponse(1, client, 1)
 
 
 def test_append_response_nonexistent_feedback(reputation_registry, identity_registry):
@@ -276,11 +291,11 @@ def test_append_response_nonexistent_feedback(reputation_registry, identity_regi
 
     client = boa.env.generate_address()
     with boa.reverts("ReputationRegistry: feedback does not exist"):
-        reputation_registry.appendResponse(1, client, 5)
+        reputation_registry.appendResponse(1, client, 5, "https://r.io/1")
 
 
-def test_append_response_revoked_feedback(reputation_registry, identity_registry):
-    """appendResponse reverts if feedback was revoked."""
+def test_append_response_revoked_feedback_allowed(reputation_registry, identity_registry):
+    """appendResponse succeeds even if feedback was revoked."""
     import boa
 
     identity_registry.register()
@@ -290,8 +305,8 @@ def test_append_response_revoked_feedback(reputation_registry, identity_registry
         reputation_registry.giveFeedback(1, 60, 0)
         reputation_registry.revokeFeedback(1, 1)
 
-    with boa.reverts("ReputationRegistry: feedback is revoked"):
-        reputation_registry.appendResponse(1, client, 1)
+    reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
+    assert reputation_registry.getResponseCount(1, client, 1) == 1
 
 
 def test_append_response_multiple_responders(reputation_registry, identity_registry):
@@ -307,9 +322,9 @@ def test_append_response_multiple_responders(reputation_registry, identity_regis
     r1 = boa.env.generate_address()
     r2 = boa.env.generate_address()
     with boa.env.prank(r1):
-        reputation_registry.appendResponse(1, client, 1)
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
     with boa.env.prank(r2):
-        reputation_registry.appendResponse(1, client, 1)
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/2")
 
     assert reputation_registry.getResponseCount(1, client, 1) == 2
 
@@ -320,6 +335,73 @@ def test_get_response_count_default(reputation_registry, identity_registry):
 
     client = boa.env.generate_address()
     assert reputation_registry.getResponseCount(1, client, 1) == 0
+
+
+def test_get_response_count_specific_feedback(reputation_registry, identity_registry):
+    """getResponseCount for a specific feedback entry with responder filter."""
+    import boa
+
+    identity_registry.register()
+
+    client = boa.env.generate_address()
+    with boa.env.prank(client):
+        reputation_registry.giveFeedback(1, 50, 0)
+
+    r1 = boa.env.generate_address()
+    r2 = boa.env.generate_address()
+    with boa.env.prank(r1):
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/2")
+    with boa.env.prank(r2):
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/3")
+
+    # Total: 3
+    assert reputation_registry.getResponseCount(1, client, 1) == 3
+    # Filtered to r1: 2
+    assert reputation_registry.getResponseCount(1, client, 1, [r1]) == 2
+    # Filtered to r2: 1
+    assert reputation_registry.getResponseCount(1, client, 1, [r2]) == 1
+
+
+def test_get_response_count_all_feedback_for_client(reputation_registry, identity_registry):
+    """getResponseCount with feedbackIndex=0 aggregates across all feedback."""
+    import boa
+
+    identity_registry.register()
+
+    client = boa.env.generate_address()
+    with boa.env.prank(client):
+        reputation_registry.giveFeedback(1, 50, 0)
+        reputation_registry.giveFeedback(1, 60, 0)
+
+    r1 = boa.env.generate_address()
+    with boa.env.prank(r1):
+        reputation_registry.appendResponse(1, client, 1, "https://r.io/1")
+        reputation_registry.appendResponse(1, client, 2, "https://r.io/2")
+
+    assert reputation_registry.getResponseCount(1, client, 0) == 2
+
+
+def test_get_response_count_all_clients(reputation_registry, identity_registry):
+    """getResponseCount with clientAddress=address(0) aggregates across all clients."""
+    import boa
+
+    identity_registry.register()
+
+    c1 = boa.env.generate_address()
+    c2 = boa.env.generate_address()
+    with boa.env.prank(c1):
+        reputation_registry.giveFeedback(1, 50, 0)
+    with boa.env.prank(c2):
+        reputation_registry.giveFeedback(1, 60, 0)
+
+    r1 = boa.env.generate_address()
+    with boa.env.prank(r1):
+        reputation_registry.appendResponse(1, c1, 1, "https://r.io/1")
+        reputation_registry.appendResponse(1, c2, 1, "https://r.io/2")
+
+    zero = "0x" + "00" * 20
+    assert reputation_registry.getResponseCount(1, zero, 0) == 2
 
 
 # -- Task 2.4: Read & query functions --------------------------------------
@@ -359,7 +441,7 @@ def test_read_feedback_revoked(reputation_registry, identity_registry):
 
 
 def test_read_all_feedback_no_filter(reputation_registry, identity_registry):
-    """readAllFeedback with no filters returns all feedback from all clients."""
+    """readAllFeedback with no filters returns non-revoked feedback from all clients."""
     import boa
 
     identity_registry.register()
@@ -372,22 +454,20 @@ def test_read_all_feedback_no_filter(reputation_registry, identity_registry):
     with boa.env.prank(c2):
         reputation_registry.giveFeedback(1, 30, 0, "tag_c")
 
-    results = reputation_registry.readAllFeedback(1)
-    assert len(results) == 3
+    clients, indexes, values, decimals, tag1s, tag2s, revoked = reputation_registry.readAllFeedback(1)
+    assert len(clients) == 3
 
-    # Results: c1 index 1, c1 index 2, c2 index 1
-    assert results[0][0] == 1  # agentId
-    assert results[0][1] == c1  # clientAddress
-    assert results[0][2] == 1  # feedbackIndex
-    assert results[0][3] == 10  # value
+    assert clients[0] == c1
+    assert indexes[0] == 1
+    assert values[0] == 10
 
-    assert results[1][1] == c1
-    assert results[1][2] == 2
-    assert results[1][3] == 20
+    assert clients[1] == c1
+    assert indexes[1] == 2
+    assert values[1] == 20
 
-    assert results[2][1] == c2
-    assert results[2][2] == 1
-    assert results[2][3] == 30
+    assert clients[2] == c2
+    assert indexes[2] == 1
+    assert values[2] == 30
 
 
 def test_read_all_feedback_client_filter(reputation_registry, identity_registry):
@@ -403,14 +483,14 @@ def test_read_all_feedback_client_filter(reputation_registry, identity_registry)
     with boa.env.prank(c2):
         reputation_registry.giveFeedback(1, 20, 0)
 
-    results = reputation_registry.readAllFeedback(1, [c2])
-    assert len(results) == 1
-    assert results[0][1] == c2
-    assert results[0][3] == 20
+    clients, indexes, values, _, _, _, _ = reputation_registry.readAllFeedback(1, [c2])
+    assert len(clients) == 1
+    assert clients[0] == c2
+    assert values[0] == 20
 
 
-def test_read_all_feedback_tag_filter(reputation_registry, identity_registry):
-    """readAllFeedback filtered by tag returns matching entries."""
+def test_read_all_feedback_tag1_filter(reputation_registry, identity_registry):
+    """readAllFeedback filtered by tag1 returns matching entries."""
     import boa
 
     identity_registry.register()
@@ -419,19 +499,45 @@ def test_read_all_feedback_tag_filter(reputation_registry, identity_registry):
     with boa.env.prank(client):
         reputation_registry.giveFeedback(1, 10, 0, "quality", "")
         reputation_registry.giveFeedback(1, 20, 0, "speed", "")
-        reputation_registry.giveFeedback(1, 30, 0, "", "quality")  # tag2 match
+        reputation_registry.giveFeedback(1, 30, 0, "quality", "other")
 
-    # Filter for "quality" — should match index 1 (tag1) and index 3 (tag2)
-    results = reputation_registry.readAllFeedback(1, [], ["quality"])
-    assert len(results) == 2
-    assert results[0][2] == 1  # feedbackIndex
-    assert results[0][3] == 10
-    assert results[1][2] == 3
-    assert results[1][3] == 30
+    # Filter for tag1="quality" — matches index 1 and 3
+    clients, indexes, values, _, _, _, _ = reputation_registry.readAllFeedback(1, [], "quality")
+    assert len(clients) == 2
+    assert indexes[0] == 1
+    assert values[0] == 10
+    assert indexes[1] == 3
+    assert values[1] == 30
+
+
+def test_read_all_feedback_include_revoked(reputation_registry, identity_registry):
+    """readAllFeedback with includeRevoked=True returns revoked entries."""
+    import boa
+
+    identity_registry.register()
+
+    client = boa.env.generate_address()
+    with boa.env.prank(client):
+        reputation_registry.giveFeedback(1, 10, 0)
+        reputation_registry.giveFeedback(1, 20, 0)
+        reputation_registry.revokeFeedback(1, 1)
+
+    # Without includeRevoked (default False) — only index 2
+    clients, indexes, _, _, _, _, _ = reputation_registry.readAllFeedback(1)
+    assert len(clients) == 1
+    assert indexes[0] == 2
+
+    # With includeRevoked=True — both entries
+    clients, indexes, _, _, _, _, revoked = reputation_registry.readAllFeedback(
+        1, [], "", "", True
+    )
+    assert len(clients) == 2
+    assert revoked[0] is True
+    assert revoked[1] is False
 
 
 def test_get_summary_basic(reputation_registry, identity_registry):
-    """getSummary with 3 feedbacks: correct sum and counts."""
+    """getSummary returns average value and count."""
     import boa
 
     identity_registry.register()
@@ -442,15 +548,15 @@ def test_get_summary_basic(reputation_registry, identity_registry):
         reputation_registry.giveFeedback(1, 20, 0)
         reputation_registry.giveFeedback(1, 30, 0)
 
-    total, decimals, active, revoked = reputation_registry.getSummary(1)
-    assert total == 60
-    assert decimals == 0
-    assert active == 3
-    assert revoked == 0
+    count, summary_value, summary_decimals = reputation_registry.getSummary(1, [client])
+    assert count == 3
+    # Average = (10+20+30)/3 = 20, mode decimals = 0
+    assert summary_value == 20
+    assert summary_decimals == 0
 
 
 def test_get_summary_with_revoked(reputation_registry, identity_registry):
-    """getSummary excludes revoked feedback from sum but counts it."""
+    """getSummary excludes revoked feedback."""
     import boa
 
     identity_registry.register()
@@ -462,34 +568,57 @@ def test_get_summary_with_revoked(reputation_registry, identity_registry):
         reputation_registry.giveFeedback(1, 30, 0)
         reputation_registry.revokeFeedback(1, 2)  # revoke the 20
 
-    total, decimals, active, revoked = reputation_registry.getSummary(1)
-    assert total == 40  # 10 + 30
-    assert active == 2
-    assert revoked == 1
+    count, summary_value, summary_decimals = reputation_registry.getSummary(1, [client])
+    assert count == 2
+    # Average = (10+30)/2 = 20
+    assert summary_value == 20
+    assert summary_decimals == 0
 
 
 def test_get_summary_decimal_normalization(reputation_registry, identity_registry):
-    """getSummary normalises values to the maximum valueDecimals."""
+    """getSummary normalises to WAD, averages, returns mode decimals."""
     import boa
 
     identity_registry.register()
 
     client = boa.env.generate_address()
     with boa.env.prank(client):
-        # 100 with 0 decimals = 100.
+        # 100 with 0 decimals = 100.0
         reputation_registry.giveFeedback(1, 100, 0)
         # 250 with 2 decimals = 2.50
         reputation_registry.giveFeedback(1, 250, 2)
 
-    total, decimals, active, revoked = reputation_registry.getSummary(1)
-    # maxDecimals = 2
-    # 100 normalised to 2 decimals: 100 * 10^2 = 10000
-    # 250 already at 2 decimals: 250
-    # total = 10250
-    assert decimals == 2
-    assert total == 10250
-    assert active == 2
-    assert revoked == 0
+    count, summary_value, summary_decimals = reputation_registry.getSummary(1, [client])
+    assert count == 2
+    # WAD: 100 * 10^18 = 100e18, 250 * 10^16 = 2.5e18
+    # sum = 102.5e18, avg = 51.25e18
+    # Mode decimals: both 0 and 2 have count=1, mode = 0 (first encountered)
+    # Scale down to 0 decimals: 51.25e18 / 10^18 = 51 (integer truncation)
+    assert summary_decimals == 0
+    assert summary_value == 51
+
+
+def test_get_summary_requires_client_addresses(reputation_registry, identity_registry):
+    """getSummary reverts when clientAddresses is empty."""
+    import boa
+
+    identity_registry.register()
+
+    with boa.reverts("ReputationRegistry: clientAddresses required"):
+        reputation_registry.getSummary(1, [])
+
+
+def test_get_summary_zero_count(reputation_registry, identity_registry):
+    """getSummary returns zeros when no matching feedback exists."""
+    import boa
+
+    identity_registry.register()
+
+    client = boa.env.generate_address()
+    count, summary_value, summary_decimals = reputation_registry.getSummary(1, [client])
+    assert count == 0
+    assert summary_value == 0
+    assert summary_decimals == 0
 
 
 def test_get_clients(reputation_registry, identity_registry):
