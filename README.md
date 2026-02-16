@@ -2,19 +2,41 @@
 
 Vyper reference implementation of [ERC-8004: Trustless Agents](https://eips.ethereum.org/EIPS/eip-8004).
 
-Three contracts:
-- **IdentityRegistry** — ERC-721 agent registration, metadata, wallet verification (EIP-712 / ERC-1271)
-- **ReputationRegistry** — feedback, revocation, response tracking, on-chain summaries
-- **ValidationRegistry** — validation request/response lifecycle
+## Contracts
 
-Built with [Moccasin](https://github.com/Cyfrin/moccasin), [Snekmate](https://github.com/pcaversaccio/snekmate), and [Titanoboa](https://github.com/vyperlang/titanoboa).
+| Contract | Description |
+|----------|-------------|
+| `IdentityRegistry.vy` | ERC-721 agent registration with metadata, URI storage, and wallet verification (EIP-712 / ERC-1271) |
+| `ReputationRegistry.vy` | Feedback, revocation, response tracking, and on-chain summary aggregation |
+| `ValidationRegistry.vy` | Validation request/response lifecycle with designated validators |
 
-## Status
+## Dependencies
 
-Work in progress. Targeting the current EIP text at eips.ethereum.org.
+- [Vyper](https://docs.vyperlang.org/) ~0.4.3
+- [Moccasin](https://github.com/Cyfrin/moccasin) (build & test framework)
+- [Snekmate](https://github.com/pcaversaccio/snekmate) 0.1.2 (ERC-721, Ownable modules)
+- [Titanoboa](https://github.com/vyperlang/titanoboa) (test backend)
+
+## Build
+
+```
+mox compile
+```
+
+## Test
+
+```
+mox test
+```
+
+106 tests across the three contracts.
 
 ## Reference
 
 - [EIP-8004 spec](https://eips.ethereum.org/EIPS/eip-8004)
-- [Official Solidity reference implementation](https://github.com/erc-8004/erc-8004-contracts)
+- [Solidity reference implementation](https://github.com/erc-8004/erc-8004-contracts)
 - [Cairo port](https://github.com/Akashneelesh/erc8004-cairo)
+
+## License
+
+[CC0-1.0](LICENSE)
