@@ -1,0 +1,45 @@
+# pragma version ~=0.4.3
+"""
+@title IIdentityRegistry Interface Definition
+@custom:contract-name IIdentityRegistry
+@license GNU Affero General Public License v3.0 only
+@notice Minimal interface for the ERC-8004 IdentityRegistry, used by
+        ReputationRegistry and ValidationRegistry to verify agent
+        existence and ownership.
+"""
+
+
+@external
+@view
+def ownerOf(tokenId: uint256) -> address:
+    """
+    @dev Returns the owner of `tokenId`. Reverts if the token
+         does not exist, which serves as the agent existence check.
+    @param tokenId The 32-byte agent identifier.
+    @return address The 20-byte owner address.
+    """
+    ...
+
+
+@external
+@view
+def getApproved(tokenId: uint256) -> address:
+    """
+    @dev Returns the approved address for `tokenId`.
+    @param tokenId The 32-byte agent identifier.
+    @return address The 20-byte approved address, or zero if none.
+    """
+    ...
+
+
+@external
+@view
+def isApprovedForAll(owner: address, operator: address) -> bool:
+    """
+    @dev Returns whether `operator` is approved to manage all
+         tokens of `owner`.
+    @param owner The 20-byte owner address.
+    @param operator The 20-byte operator address.
+    @return bool True if `operator` is approved for all.
+    """
+    ...

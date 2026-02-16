@@ -11,6 +11,7 @@ env/
 # Moccasin
 out/
 .build/
+lib/
 
 # Vyper
 *.vy.json
@@ -37,3 +38,4 @@ Thumbs.db
 # Environment
 .env
 .env.local
+reference/

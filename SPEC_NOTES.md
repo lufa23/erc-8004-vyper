@@ -241,6 +241,67 @@ Not globally via pragma. In 0.4.2+, `@nonreentrant` functions cannot call other 
 - Module system: `uses:`, `initializes:`, `exports:`. Dependency injection: `initializes: erc721[ownable := ow]`.
 
 
+## Spec Conformance Review — Step 2 Findings
+
+Compared our three Vyper contracts function-by-function against the Solidity reference implementation (`erc-8004/erc-8004-contracts`).
+
+### IdentityRegistry — 2 gaps (minor)
+
+- Missing `isAuthorizedOrOwner(address, uint256) → bool`.
+- Missing `getVersion() → string`.
+- All other functions, events, and behavioral rules match the reference.
+
+### ReputationRegistry — 10 gaps
+
+- `giveFeedback`: missing `valueDecimals <= 18` check, missing `value ± 1e38` range check, missing self-feedback prevention (owner/approved/operator).
+- `appendResponse`: extra `tag` param not in spec, missing `responseURI` non-empty check, prevents duplicate responses (reference allows multiple from same responder).
+- `readAllFeedback`: different signature — we use `(agentId, clients[], tags[])` returning struct array; reference uses `(agentId, clientAddresses[], tag1, tag2, includeRevoked)` returning parallel arrays.
+- `getSummary`: different signature and return — we use `(agentId, clients[], tags[]) → (totalValue, maxDecimals, activeCount, revokedCount)`; reference uses `(agentId, clientAddresses[], tag1, tag2) → (count, summaryValue, summaryValueDecimals)` with WAD normalization and mode decimals.
+- `getResponseCount`: missing `responders[]` filter and flexible aggregation modes (all-clients, all-indexes).
+- Missing `getVersion()`.
+
+### ValidationRegistry — architecture mismatch
+
+Our implementation is fundamentally different from the reference:
+
+| Aspect | Reference | Ours |
+|--------|-----------|------|
+| Primary key | `requestHash` (bytes32) | `(agentId, requester, requestIndex)` triple |
+| Who requests | Owner/approved of agent | Anyone |
+| Validator model | Designated per-request (`validatorAddress` param) | Open (anyone can respond) |
+| Response format | `uint8` 0–100 scale | `bool` isValid |
+| Response updates | Updatable (progressive validation) | One-time per validator |
+| Missing functions | — | `getValidationStatus`, `getAgentValidations`, `getValidatorRequests` |
+| Extra functions | — | `getValidCount`, `getInvalidCount`, `getLastRequestIndex` |
+
+This gap was caused by building from the EIP prose specification rather than the Solidity reference contracts. The EIP describes validation conceptually but the reference implementation defines a specific `requestHash`-keyed, designated-validator architecture that was not captured in our initial design. Caught by Step 2 of the implementation pipeline.
+
+### Phase A fixes (completed, 89 tests passing)
+
+1. Added `isAuthorizedOrOwner(spender, agentId) → bool` to IdentityRegistry. Uses `erc721._owner_of`, `erc721.isApprovedForAll`, `erc721._get_approved` (all `@view`). 4 tests.
+2. Added `getVersion() → String[8]` returning `"1.0.0"` to all three contracts. 3 tests.
+3. Added `valueDecimals <= 18` and `value ± 1e38` range checks to `giveFeedback`. 6 boundary tests.
+4. Added self-feedback prevention to `giveFeedback` — rejects owner, approved address, and approved-for-all operator via staticcalls to IdentityRegistry. 3 tests.
+
+### Phase B remaining — ReputationRegistry signature alignment
+
+- Rework `appendResponse`: remove `tag` param, add `responseURI` non-empty check, allow multiple responses from same responder.
+- Rework `readAllFeedback`: change to `(agentId, clientAddresses[], tag1, tag2, includeRevoked)` params, return parallel arrays.
+- Rework `getSummary`: change to `(agentId, clientAddresses[], tag1, tag2)` params, WAD normalization, mode decimals, return `(count, summaryValue, summaryValueDecimals)`.
+- Rework `getResponseCount`: add `responders[]` filter, flexible aggregation (address(0)/0 wildcards).
+
+### Phase C remaining — ValidationRegistry rewrite
+
+- Redesign data model around `requestHash` as primary key with `ValidationStatus` struct.
+- Rewrite `validationRequest(validatorAddress, agentId, requestURI, requestHash)` with owner/approved auth check.
+- Rewrite `validationResponse(requestHash, response, responseURI, responseHash, tag)` with designated-validator enforcement, 0–100 response scale, updatable responses.
+- Add `getValidationStatus(requestHash)`, `getAgentValidations(agentId)`, `getValidatorRequests(validatorAddress)`.
+- Rewrite `getSummary(agentId, validatorAddresses[], tag)` returning `(count, avgResponse)`.
+- Remove extra functions (`getValidCount`, `getInvalidCount`, `getLastRequestIndex`, `getResponseCount`).
+- Add `getVersion()` (already added, but will need re-verification after rewrite).
+- Rewrite all ValidationRegistry tests.
+
+
 ## Repo structure
 
 ```
