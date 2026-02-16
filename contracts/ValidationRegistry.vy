@@ -4,10 +4,10 @@
 @custom:contract-name ValidationRegistry
 @license UNLICENSED
 @notice On-chain validation system for ERC-8004 agents.
-        Tracks validation requests per (agentId, requester) pair
-        and validator responses with valid/invalid outcomes.
-        References the Identity Registry for agent existence and
-        ownership checks via staticcall.
+        Tracks validation requests keyed by caller-computed requestHash.
+        Each request designates a specific validator who provides a
+        0–100 response score. References the Identity Registry for
+        agent existence and ownership checks via staticcall.
 """
 
 
@@ -21,52 +21,47 @@ ARRAY_RETURN_MAX: constant(uint256) = 1024
 FILTER_ARRAY_MAX: constant(uint256) = 128
 
 
-event ValidationRequested:
-    agentId: indexed(uint256)
-    requester: indexed(address)
-    requestIndex: uint64
-    requestURI: String[LINK_MAX]
-    requestHash: bytes32
-    indexedTag: indexed(String[TAG_MAX])
+struct ValidationStatus:
+    validatorAddress: address
+    agentId: uint256
+    response: uint8
+    responseHash: bytes32
     tag: String[TAG_MAX]
+    lastUpdate: uint256
+    hasResponse: bool
 
 
-event ValidationResponseSubmitted:
+event ValidationRequest:
+    validatorAddress: indexed(address)
     agentId: indexed(uint256)
-    requester: indexed(address)
-    requestIndex: indexed(uint64)
-    validator: address
-    isValid: bool
+    requestURI: String[LINK_MAX]
+    requestHash: indexed(bytes32)
+
+
+event ValidationResponse:
+    validatorAddress: indexed(address)
+    agentId: indexed(uint256)
+    requestHash: indexed(bytes32)
+    response: uint8
     responseURI: String[LINK_MAX]
     responseHash: bytes32
+    tag: String[TAG_MAX]
 
 
 # @dev Address of the IdentityRegistry contract, set once at deploy time.
 _IDENTITY_REGISTRY: immutable(IIdentityRegistry)
 
 
-# @dev Last request index per (agentId, requester) pair. 1-indexed.
-_last_request_index: HashMap[uint256, HashMap[address, uint64]]
+# @dev Primary storage: requestHash → ValidationStatus.
+_validations: HashMap[bytes32, ValidationStatus]
 
 
-# @dev Tag stored per validation request.
-_request_tag: HashMap[uint256, HashMap[address, HashMap[uint64, String[TAG_MAX]]]]
+# @dev List of requestHashes per agentId, for getSummary / getAgentValidations.
+_agent_validations: HashMap[uint256, DynArray[bytes32, ARRAY_RETURN_MAX]]
 
 
-# @dev Total response count per validation request.
-_response_count: HashMap[uint256, HashMap[address, HashMap[uint64, uint64]]]
-
-
-# @dev Count of "valid" responses per validation request.
-_valid_count: HashMap[uint256, HashMap[address, HashMap[uint64, uint64]]]
-
-
-# @dev Count of "invalid" responses per validation request.
-_invalid_count: HashMap[uint256, HashMap[address, HashMap[uint64, uint64]]]
-
-
-# @dev Whether a validator has already responded to a request.
-_has_validated: HashMap[uint256, HashMap[address, HashMap[uint64, HashMap[address, bool]]]]
+# @dev List of requestHashes per validator, for getValidatorRequests.
+_validator_requests: HashMap[address, DynArray[bytes32, ARRAY_RETURN_MAX]]
 
 
 @deploy
@@ -95,130 +90,134 @@ def getIdentityRegistry() -> address:
 
 @external
 def validationRequest(
+    validatorAddress: address,
     agentId: uint256,
-    requestURI: String[LINK_MAX] = "",
-    requestHash: bytes32 = empty(bytes32),
-    tag: String[TAG_MAX] = "",
-) -> uint64:
+    requestURI: String[LINK_MAX],
+    requestHash: bytes32,
+):
     """
-    @dev Submits a validation request for `agentId`. The agent must
-         exist in the Identity Registry. Requests are indexed per
-         (agentId, msg.sender) pair with 1-based indices.
+    @dev Submits a validation request for `agentId`, designating
+         `validatorAddress` as the only address that may respond.
+         Caller must be the owner or an approved operator of `agentId`.
+         The `requestHash` is the caller-computed primary key and must
+         be unique.
+    @param validatorAddress The designated validator address.
     @param agentId The agent to request validation for.
-    @param requestURI URI pointing to off-chain request content (optional).
-    @param requestHash keccak256 of content at requestURI (optional).
-    @param tag Tag for categorisation (optional, stored on-chain).
-    @return uint64 The newly assigned request index.
+    @param requestURI URI pointing to off-chain request content.
+    @param requestHash Unique identifier for this request.
     """
-    owner: address = staticcall _IDENTITY_REGISTRY.ownerOf(agentId)
+    assert validatorAddress != empty(address), "ValidationRegistry: bad validator"
+    assert self._validations[requestHash].validatorAddress == empty(address), "ValidationRegistry: exists"
 
-    idx: uint64 = self._last_request_index[agentId][msg.sender] + 1
-    self._last_request_index[agentId][msg.sender] = idx
+    assert staticcall _IDENTITY_REGISTRY.isAuthorizedOrOwner(msg.sender, agentId), "ValidationRegistry: not authorized"
 
-    self._request_tag[agentId][msg.sender][idx] = tag
-
-    log ValidationRequested(
+    self._validations[requestHash] = ValidationStatus(
+        validatorAddress=validatorAddress,
         agentId=agentId,
-        requester=msg.sender,
-        requestIndex=idx,
-        requestURI=requestURI,
-        requestHash=requestHash,
-        indexedTag=tag,
-        tag=tag,
+        response=0,
+        responseHash=empty(bytes32),
+        tag="",
+        lastUpdate=block.timestamp,
+        hasResponse=False,
     )
 
-    return idx
+    self._agent_validations[agentId].append(requestHash)
+    self._validator_requests[validatorAddress].append(requestHash)
+
+    log ValidationRequest(
+        validatorAddress=validatorAddress,
+        agentId=agentId,
+        requestURI=requestURI,
+        requestHash=requestHash,
+    )
 
 
 @external
 def validationResponse(
-    agentId: uint256,
-    requester: address,
-    requestIndex: uint64,
-    isValid: bool,
+    requestHash: bytes32,
+    response: uint8,
     responseURI: String[LINK_MAX] = "",
     responseHash: bytes32 = empty(bytes32),
+    tag: String[TAG_MAX] = "",
 ):
     """
-    @dev Submits a validation response for an existing request.
-         Anyone can respond, but each address may only respond
-         once per request.
-    @param agentId The agent the request was made for.
-    @param requester The address that submitted the request.
-    @param requestIndex The 1-based index of the request.
-    @param isValid Whether the validation outcome is valid.
+    @dev Submits or updates a validation response for an existing request.
+         Only the designated validator for the request may call this.
+         Can be called multiple times (progressive validation).
+    @param requestHash The unique identifier of the request.
+    @param response The validation score (0–100).
     @param responseURI URI pointing to off-chain response content (optional).
     @param responseHash keccak256 of content at responseURI (optional).
+    @param tag Tag for categorisation (optional).
     """
-    assert requestIndex > 0 and requestIndex <= self._last_request_index[agentId][requester], "ValidationRegistry: request does not exist"
-    assert not self._has_validated[agentId][requester][requestIndex][msg.sender], "ValidationRegistry: already validated"
+    s: ValidationStatus = self._validations[requestHash]
+    assert s.validatorAddress != empty(address), "ValidationRegistry: unknown"
+    assert msg.sender == s.validatorAddress, "ValidationRegistry: not validator"
+    assert response <= 100, "ValidationRegistry: response > 100"
 
-    self._has_validated[agentId][requester][requestIndex][msg.sender] = True
-    self._response_count[agentId][requester][requestIndex] += 1
+    self._validations[requestHash].response = response
+    self._validations[requestHash].responseHash = responseHash
+    self._validations[requestHash].tag = tag
+    self._validations[requestHash].lastUpdate = block.timestamp
+    self._validations[requestHash].hasResponse = True
 
-    if isValid:
-        self._valid_count[agentId][requester][requestIndex] += 1
-    else:
-        self._invalid_count[agentId][requester][requestIndex] += 1
-
-    log ValidationResponseSubmitted(
-        agentId=agentId,
-        requester=requester,
-        requestIndex=requestIndex,
-        validator=msg.sender,
-        isValid=isValid,
+    log ValidationResponse(
+        validatorAddress=s.validatorAddress,
+        agentId=s.agentId,
+        requestHash=requestHash,
+        response=response,
         responseURI=responseURI,
         responseHash=responseHash,
+        tag=tag,
     )
 
 
 @external
 @view
-def getResponseCount(agentId: uint256, requester: address, requestIndex: uint64) -> uint64:
+def getValidationStatus(requestHash: bytes32) -> (address, uint256, uint8, bytes32, String[TAG_MAX], uint256):
     """
-    @dev Returns the total number of responses for a validation request.
-    @param agentId The agent identifier.
-    @param requester The address that submitted the request.
-    @param requestIndex The 1-based index of the request.
-    @return uint64 The total response count.
+    @dev Returns the stored fields of a validation request.
+    @param requestHash The unique identifier of the request.
+    @return (validatorAddress, agentId, response, responseHash, tag, lastUpdate).
     """
-    return self._response_count[agentId][requester][requestIndex]
+    s: ValidationStatus = self._validations[requestHash]
+    assert s.validatorAddress != empty(address), "ValidationRegistry: unknown"
+    return (s.validatorAddress, s.agentId, s.response, s.responseHash, s.tag, s.lastUpdate)
 
 
 @external
 @view
-def getValidCount(agentId: uint256, requester: address, requestIndex: uint64) -> uint64:
+def getAgentValidations(agentId: uint256) -> DynArray[bytes32, ARRAY_RETURN_MAX]:
     """
-    @dev Returns the number of "valid" responses for a validation request.
+    @dev Returns the list of requestHashes for `agentId`.
     @param agentId The agent identifier.
-    @param requester The address that submitted the request.
-    @param requestIndex The 1-based index of the request.
-    @return uint64 The valid response count.
+    @return DynArray of requestHashes.
     """
-    return self._valid_count[agentId][requester][requestIndex]
+    return self._agent_validations[agentId]
 
 
 @external
 @view
-def getInvalidCount(agentId: uint256, requester: address, requestIndex: uint64) -> uint64:
+def getValidatorRequests(validatorAddress: address) -> DynArray[bytes32, ARRAY_RETURN_MAX]:
     """
-    @dev Returns the number of "invalid" responses for a validation request.
-    @param agentId The agent identifier.
-    @param requester The address that submitted the request.
-    @param requestIndex The 1-based index of the request.
-    @return uint64 The invalid response count.
+    @dev Returns the list of requestHashes assigned to `validatorAddress`.
+    @param validatorAddress The validator address.
+    @return DynArray of requestHashes.
     """
-    return self._invalid_count[agentId][requester][requestIndex]
+    return self._validator_requests[validatorAddress]
 
 
 @internal
 @pure
-def _in_tags(tag: String[TAG_MAX], tags: DynArray[String[TAG_MAX], FILTER_ARRAY_MAX]) -> bool:
+def _match_validator(
+    addr: address,
+    validators: DynArray[address, FILTER_ARRAY_MAX],
+) -> bool:
     """
-    @dev Returns True if `tag` is found in `tags`.
+    @dev Returns True if `addr` is found in `validators`.
     """
-    for t: String[TAG_MAX] in tags:
-        if t == tag:
+    for v: address in validators:
+        if v == addr:
             return True
     return False
 
@@ -227,49 +226,46 @@ def _in_tags(tag: String[TAG_MAX], tags: DynArray[String[TAG_MAX], FILTER_ARRAY_
 @view
 def getSummary(
     agentId: uint256,
-    requester: address,
-    tags: DynArray[String[TAG_MAX], FILTER_ARRAY_MAX] = [],
-) -> (uint64, uint64, uint64):
+    validatorAddresses: DynArray[address, FILTER_ARRAY_MAX] = [],
+    tag: String[TAG_MAX] = "",
+) -> (uint64, uint8):
     """
-    @dev Aggregates validation counts across all requests from
-         `requester` for `agentId`, optionally filtered by tags.
+    @dev Aggregates validation responses for `agentId`, optionally
+         filtered by validator addresses and/or tag. Only includes
+         requests that have received a response.
     @param agentId The agent identifier.
-    @param requester The address that submitted the requests.
-    @param tags Tags to filter by (empty = no filter).
-    @return (totalResponses, totalValid, totalInvalid).
+    @param validatorAddresses Validators to filter by (empty = all).
+    @param tag Tag to filter by (empty = no filter).
+    @return (count, avgResponse).
     """
-    last: uint256 = convert(self._last_request_index[agentId][requester], uint256)
-    has_tag_filter: bool = len(tags) > 0
+    filter_validators: bool = len(validatorAddresses) > 0
+    filter_tag: bool = len(tag) > 0
 
-    total_responses: uint64 = 0
-    total_valid: uint64 = 0
-    total_invalid: uint64 = 0
+    total_response: uint256 = 0
+    count: uint64 = 0
 
-    for i: uint256 in range(last, bound=ARRAY_RETURN_MAX):
-        idx: uint64 = convert(i + 1, uint64)
+    for h: bytes32 in self._agent_validations[agentId]:
+        s: ValidationStatus = self._validations[h]
 
-        if has_tag_filter:
-            if not self._in_tags(self._request_tag[agentId][requester][idx], tags):
+        if not s.hasResponse:
+            continue
+
+        if filter_validators:
+            if not self._match_validator(s.validatorAddress, validatorAddresses):
                 continue
 
-        total_responses += self._response_count[agentId][requester][idx]
-        total_valid += self._valid_count[agentId][requester][idx]
-        total_invalid += self._invalid_count[agentId][requester][idx]
+        if filter_tag:
+            if s.tag != tag:
+                continue
 
-    return (total_responses, total_valid, total_invalid)
+        total_response += convert(s.response, uint256)
+        count += 1
 
+    avg_response: uint8 = 0
+    if count > 0:
+        avg_response = convert(total_response // convert(count, uint256), uint8)
 
-@external
-@view
-def getLastRequestIndex(agentId: uint256, requester: address) -> uint64:
-    """
-    @dev Returns the last request index for the given
-         (agentId, requester) pair.
-    @param agentId The agent identifier.
-    @param requester The requester address.
-    @return uint64 The last request index (0 if no requests made).
-    """
-    return self._last_request_index[agentId][requester]
+    return (count, avg_response)
 
 
 @external

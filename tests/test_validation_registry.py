@@ -1,37 +1,5 @@
 """Tests for ValidationRegistry"""
 
-from eth_utils import keccak
-from eth_abi import decode
-
-
-# -- Helpers ----------------------------------------------------------------
-
-
-VALIDATION_REQUESTED_SIG = keccak(
-    text="ValidationRequested(uint256,address,uint64,string,bytes32,string,string)"
-)
-
-
-def _log_name(log):
-    """Return the event name for both decoded and raw log entries."""
-    name = type(log).__name__
-    if name != "RawLogEntry":
-        return name
-    sig_int = int.from_bytes(VALIDATION_REQUESTED_SIG, "big")
-    if len(log.topics) >= 1 and log.topics[0] == sig_int:
-        return "ValidationRequested"
-    return "Unknown"
-
-
-def _get_logs(contract):
-    """Get logs with indexed-string events surviving decode issues."""
-    return contract.get_logs(strict=False)
-
-
-def _filter_logs(contract, event_name):
-    """Return only logs matching event_name."""
-    return [l for l in _get_logs(contract) if _log_name(l) == event_name]
-
 
 # -- Tests ------------------------------------------------------------------
 
@@ -41,332 +9,441 @@ def test_get_identity_registry(validation_registry, identity_registry):
     assert validation_registry.getIdentityRegistry() == identity_registry.address
 
 
-def test_validation_request_basic(validation_registry, identity_registry, deployer):
-    """validationRequest emits event and returns requestIndex = 1."""
-    identity_registry.register()
-
-    idx = validation_registry.validationRequest(1)
-    assert idx == 1
-
-    logs = _filter_logs(validation_registry, "ValidationRequested")
-    assert len(logs) == 1
-
-    # Decode data: requestIndex(uint64), requestURI(string), requestHash(bytes32), tag(string)
-    types = ["uint64", "string", "bytes32", "string"]
-    d = decode(types, logs[0].data)
-    assert d[0] == 1   # requestIndex
-    assert d[1] == ""  # requestURI
-    assert d[2] == b"\x00" * 32  # requestHash
-    assert d[3] == ""  # tag
-
-    # topic[1] = agentId, topic[2] = requester (address)
-    assert logs[0].topics[1] == 1
-    assert logs[0].topics[2] == int.from_bytes(bytes.fromhex(deployer[2:]), "big")
-
-
-def test_validation_request_increments_index(validation_registry, identity_registry):
-    """Two requests produce indices 1 and 2."""
-    identity_registry.register()
-
-    idx1 = validation_registry.validationRequest(1)
-    idx2 = validation_registry.validationRequest(1)
-    assert idx1 == 1
-    assert idx2 == 2
-
-
-def test_validation_request_nonexistent_agent(validation_registry):
-    """validationRequest reverts for a non-existent agent."""
-    import pytest
-
-    # Use pytest.raises instead of boa.reverts() to work around a
-    # Titanoboa repr() bug with deeply nested HashMap storage types.
-    with pytest.raises(Exception):
-        validation_registry.validationRequest(999)
-
-
-def test_validation_request_with_all_params(validation_registry, identity_registry):
-    """validationRequest with all params filled emits correct data."""
-    identity_registry.register()
-
-    idx = validation_registry.validationRequest(
-        1,
-        "https://request.example.com/1.json",
-        b"\xab" * 32,
-        "security",
-    )
-    assert idx == 1
-
-    logs = _filter_logs(validation_registry, "ValidationRequested")
-    assert len(logs) == 1
-
-    types = ["uint64", "string", "bytes32", "string"]
-    d = decode(types, logs[0].data)
-    assert d[0] == 1
-    assert d[1] == "https://request.example.com/1.json"
-    assert d[2] == b"\xab" * 32
-    assert d[3] == "security"
-
-
-def test_validation_request_empty_params(validation_registry, identity_registry):
-    """validationRequest with all defaults still works."""
-    identity_registry.register()
-
-    idx = validation_registry.validationRequest(1)
-    assert idx == 1
-
-
-# -- Task 3.3: validationResponse ------------------------------------------
-
-
-def test_validation_response_valid(validation_registry, identity_registry, deployer):
-    """validationResponse with isValid=True emits event and increments valid count."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    validator = boa.env.generate_address()
-    with boa.env.prank(validator):
-        validation_registry.validationResponse(1, deployer, 1, True)
-
-    logs = _get_logs(validation_registry)
-    resp_logs = [l for l in logs if _log_name(l) == "ValidationResponseSubmitted"]
-    assert len(resp_logs) == 1
-    assert resp_logs[0].agentId == 1
-    assert resp_logs[0].requester == deployer
-    assert resp_logs[0].requestIndex == 1
-    assert resp_logs[0].validator == validator
-    assert resp_logs[0].isValid is True
-
-
-def test_validation_response_invalid(validation_registry, identity_registry, deployer):
-    """validationResponse with isValid=False increments invalid count."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    validator = boa.env.generate_address()
-    with boa.env.prank(validator):
-        validation_registry.validationResponse(1, deployer, 1, False)
-
-    logs = _get_logs(validation_registry)
-    resp_logs = [l for l in logs if _log_name(l) == "ValidationResponseSubmitted"]
-    assert len(resp_logs) == 1
-    assert resp_logs[0].isValid is False
-
-
-def test_validation_response_no_double(validation_registry, identity_registry, deployer):
-    """Same validator tries twice, second reverts."""
-    import boa
-    import pytest
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    validator = boa.env.generate_address()
-    with boa.env.prank(validator):
-        validation_registry.validationResponse(1, deployer, 1, True)
-        # Titanoboa repr() bug with deep HashMaps — use pytest.raises
-        with pytest.raises(Exception):
-            validation_registry.validationResponse(1, deployer, 1, True)
-
-
-def test_validation_response_nonexistent_request(validation_registry, identity_registry, deployer):
-    """validationResponse reverts for a non-existent request."""
-    import pytest
-
-    identity_registry.register()
-
-    with pytest.raises(Exception):
-        validation_registry.validationResponse(1, deployer, 5, True)
-
-
-def test_validation_response_multiple_validators(validation_registry, identity_registry, deployer):
-    """Two different validators respond, both counted."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    v1 = boa.env.generate_address()
-    v2 = boa.env.generate_address()
-    with boa.env.prank(v1):
-        validation_registry.validationResponse(1, deployer, 1, True)
-    with boa.env.prank(v2):
-        validation_registry.validationResponse(1, deployer, 1, False)
-
-    # Verify via events — two ResponseSubmitted logs
-    logs = _get_logs(validation_registry)
-    resp_logs = [l for l in logs if _log_name(l) == "ValidationResponseSubmitted"]
-    assert len(resp_logs) == 1  # only last tx logs
-    # But the state is correct — we'll verify in Task 3.4 with getter functions
-
-
-def test_validation_response_with_all_params(validation_registry, identity_registry, deployer):
-    """validationResponse with URI and hash filled emits correct data."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    validator = boa.env.generate_address()
-    with boa.env.prank(validator):
-        validation_registry.validationResponse(
-            1, deployer, 1, True,
-            "https://response.example.com/1.json",
-            b"\xdd" * 32,
-        )
-
-    logs = _get_logs(validation_registry)
-    resp_logs = [l for l in logs if _log_name(l) == "ValidationResponseSubmitted"]
-    assert len(resp_logs) == 1
-    assert resp_logs[0].responseURI == "https://response.example.com/1.json"
-    assert resp_logs[0].responseHash == b"\xdd" * 32
-
-
-# -- Task 3.4: Query functions ---------------------------------------------
-
-
-def test_get_response_count(validation_registry, identity_registry, deployer):
-    """getResponseCount returns 2 after two validators respond."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    v1 = boa.env.generate_address()
-    v2 = boa.env.generate_address()
-    with boa.env.prank(v1):
-        validation_registry.validationResponse(1, deployer, 1, True)
-    with boa.env.prank(v2):
-        validation_registry.validationResponse(1, deployer, 1, False)
-
-    assert validation_registry.getResponseCount(1, deployer, 1) == 2
-
-
-def test_get_valid_invalid_counts(validation_registry, identity_registry, deployer):
-    """2 valid + 1 invalid responses produce correct separate counts."""
-    import boa
-
-    identity_registry.register()
-    validation_registry.validationRequest(1)
-
-    v1 = boa.env.generate_address()
-    v2 = boa.env.generate_address()
-    v3 = boa.env.generate_address()
-    with boa.env.prank(v1):
-        validation_registry.validationResponse(1, deployer, 1, True)
-    with boa.env.prank(v2):
-        validation_registry.validationResponse(1, deployer, 1, True)
-    with boa.env.prank(v3):
-        validation_registry.validationResponse(1, deployer, 1, False)
-
-    assert validation_registry.getValidCount(1, deployer, 1) == 2
-    assert validation_registry.getInvalidCount(1, deployer, 1) == 1
-    assert validation_registry.getResponseCount(1, deployer, 1) == 3
-
-
-def test_get_summary_basic(validation_registry, identity_registry, deployer):
-    """getSummary aggregates across multiple requests."""
-    import boa
-
-    identity_registry.register()
-
-    # Request 1: 1 valid
-    validation_registry.validationRequest(1)
-    v1 = boa.env.generate_address()
-    with boa.env.prank(v1):
-        validation_registry.validationResponse(1, deployer, 1, True)
-
-    # Request 2: 1 valid + 1 invalid
-    validation_registry.validationRequest(1)
-    v2 = boa.env.generate_address()
-    v3 = boa.env.generate_address()
-    with boa.env.prank(v2):
-        validation_registry.validationResponse(1, deployer, 2, True)
-    with boa.env.prank(v3):
-        validation_registry.validationResponse(1, deployer, 2, False)
-
-    total_resp, total_valid, total_invalid = validation_registry.getSummary(1, deployer)
-    assert total_resp == 3
-    assert total_valid == 2
-    assert total_invalid == 1
-
-
-def test_get_summary_tag_filter(validation_registry, identity_registry, deployer):
-    """getSummary filtered by tag only includes matching requests."""
-    import boa
-
-    identity_registry.register()
-
-    # Request 1 with tag "security"
-    validation_registry.validationRequest(1, "", b"\x00" * 32, "security")
-    v1 = boa.env.generate_address()
-    with boa.env.prank(v1):
-        validation_registry.validationResponse(1, deployer, 1, True)
-
-    # Request 2 with tag "compliance"
-    validation_registry.validationRequest(1, "", b"\x00" * 32, "compliance")
-    v2 = boa.env.generate_address()
-    with boa.env.prank(v2):
-        validation_registry.validationResponse(1, deployer, 2, False)
-
-    # Request 3 with tag "security"
-    validation_registry.validationRequest(1, "", b"\x00" * 32, "security")
-    v3 = boa.env.generate_address()
-    with boa.env.prank(v3):
-        validation_registry.validationResponse(1, deployer, 3, True)
-
-    # Filter for "security" only — requests 1 and 3
-    total_resp, total_valid, total_invalid = validation_registry.getSummary(
-        1, deployer, ["security"]
-    )
-    assert total_resp == 2
-    assert total_valid == 2
-    assert total_invalid == 0
-
-    # Filter for "compliance" only — request 2
-    total_resp, total_valid, total_invalid = validation_registry.getSummary(
-        1, deployer, ["compliance"]
-    )
-    assert total_resp == 1
-    assert total_valid == 0
-    assert total_invalid == 1
-
-
-def test_get_last_request_index(validation_registry, identity_registry, deployer):
-    """getLastRequestIndex tracks correctly after multiple requests."""
-    identity_registry.register()
-
-    assert validation_registry.getLastRequestIndex(1, deployer) == 0
-
-    validation_registry.validationRequest(1)
-    assert validation_registry.getLastRequestIndex(1, deployer) == 1
-
-    validation_registry.validationRequest(1)
-    assert validation_registry.getLastRequestIndex(1, deployer) == 2
-
-
-def test_query_defaults_zero(validation_registry, identity_registry, deployer):
-    """All getters return 0 for unset data."""
-    import boa
-
-    other = boa.env.generate_address()
-    assert validation_registry.getResponseCount(1, other, 1) == 0
-    assert validation_registry.getValidCount(1, other, 1) == 0
-    assert validation_registry.getInvalidCount(1, other, 1) == 0
-    assert validation_registry.getLastRequestIndex(1, other) == 0
-
-    total_resp, total_valid, total_invalid = validation_registry.getSummary(1, other)
-    assert total_resp == 0
-    assert total_valid == 0
-    assert total_invalid == 0
-
-
-# -- Phase A.2: getVersion ----------------------------------------------------
-
-
 def test_get_version(validation_registry):
     """getVersion returns '1.0.0'."""
     assert validation_registry.getVersion() == "1.0.0"
+
+
+# -- C.2: validationRequest ---------------------------------------------------
+
+
+def test_validation_request_basic(validation_registry, identity_registry, deployer):
+    """validationRequest by owner emits event."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x01" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/1", req_hash)
+
+    logs = validation_registry.get_logs()
+    assert len(logs) == 1
+    assert logs[0].validatorAddress == validator
+    assert logs[0].agentId == 1
+    assert logs[0].requestURI == "https://req.io/1"
+    assert logs[0].requestHash == req_hash
+
+
+def test_validation_request_approved_operator(validation_registry, identity_registry, deployer):
+    """validationRequest succeeds when called by an approved operator."""
+    import boa
+
+    identity_registry.register()
+    operator = boa.env.generate_address()
+    identity_registry.setApprovalForAll(operator, True)
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x02" * 32
+    with boa.env.prank(operator):
+        validation_registry.validationRequest(validator, 1, "https://req.io/2", req_hash)
+
+
+def test_validation_request_not_authorized(validation_registry, identity_registry, deployer):
+    """validationRequest reverts when caller is not owner or approved."""
+    import boa
+    import pytest
+
+    identity_registry.register()
+
+    stranger = boa.env.generate_address()
+    validator = boa.env.generate_address()
+    req_hash = b"\x03" * 32
+    with boa.env.prank(stranger):
+        # Titanoboa repr() bug with struct-containing HashMaps
+        with pytest.raises(Exception):
+            validation_registry.validationRequest(validator, 1, "https://req.io/3", req_hash)
+
+
+def test_validation_request_nonexistent_agent(validation_registry, identity_registry):
+    """validationRequest reverts for a non-existent agent."""
+    import boa
+    import pytest
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x04" * 32
+    with pytest.raises(Exception):
+        validation_registry.validationRequest(validator, 999, "https://req.io/4", req_hash)
+
+
+def test_validation_request_duplicate_hash(validation_registry, identity_registry, deployer):
+    """validationRequest reverts if requestHash already exists."""
+    import boa
+    import pytest
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x05" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/5", req_hash)
+
+    # Titanoboa repr() bug with struct-containing HashMaps
+    with pytest.raises(Exception):
+        validation_registry.validationRequest(validator, 1, "https://req.io/6", req_hash)
+
+
+def test_validation_request_zero_validator(validation_registry, identity_registry, deployer):
+    """validationRequest reverts when validatorAddress is zero."""
+    import boa
+    import pytest
+
+    identity_registry.register()
+
+    zero = "0x" + "00" * 20
+    req_hash = b"\x06" * 32
+    # Titanoboa repr() bug with struct-containing HashMaps
+    with pytest.raises(Exception):
+        validation_registry.validationRequest(zero, 1, "https://req.io/7", req_hash)
+
+
+# -- C.3: validationResponse --------------------------------------------------
+
+
+def test_validation_response_basic(validation_registry, identity_registry, deployer):
+    """validationResponse by designated validator emits event and sets fields."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x10" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/10", req_hash)
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(req_hash, 85, "https://resp.io/1", b"\xaa" * 32, "security")
+
+    logs = validation_registry.get_logs()
+    resp_logs = [l for l in logs if type(l).__name__ == "ValidationResponse"]
+    assert len(resp_logs) == 1
+    assert resp_logs[0].validatorAddress == validator
+    assert resp_logs[0].agentId == 1
+    assert resp_logs[0].requestHash == req_hash
+    assert resp_logs[0].response == 85
+    assert resp_logs[0].responseURI == "https://resp.io/1"
+    assert resp_logs[0].responseHash == b"\xaa" * 32
+    assert resp_logs[0].tag == "security"
+
+
+def test_validation_response_not_validator(validation_registry, identity_registry, deployer):
+    """validationResponse reverts when caller is not the designated validator."""
+    import boa
+    import pytest
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x11" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/11", req_hash)
+
+    other = boa.env.generate_address()
+    with boa.env.prank(other):
+        with pytest.raises(Exception):
+            validation_registry.validationResponse(req_hash, 50)
+
+
+def test_validation_response_over_100(validation_registry, identity_registry, deployer):
+    """validationResponse reverts when response > 100."""
+    import boa
+    import pytest
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x12" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/12", req_hash)
+
+    with boa.env.prank(validator):
+        with pytest.raises(Exception):
+            validation_registry.validationResponse(req_hash, 101)
+
+
+def test_validation_response_unknown_request(validation_registry, identity_registry):
+    """validationResponse reverts for an unknown requestHash."""
+    import pytest
+
+    with pytest.raises(Exception):
+        validation_registry.validationResponse(b"\xff" * 32, 50)
+
+
+def test_validation_response_updatable(validation_registry, identity_registry, deployer):
+    """validationResponse can be called multiple times to update the response."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x13" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/13", req_hash)
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(req_hash, 50, "", b"\x00" * 32, "partial")
+        validation_registry.validationResponse(req_hash, 95, "", b"\x00" * 32, "final")
+
+
+# -- C.4: Query functions -----------------------------------------------------
+
+
+def test_get_validation_status(validation_registry, identity_registry, deployer):
+    """getValidationStatus returns stored fields after a response."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x20" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/20", req_hash)
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(req_hash, 75, "https://resp.io/20", b"\xbb" * 32, "audit")
+
+    addr, agent_id, resp, resp_hash, tag, last_update = validation_registry.getValidationStatus(req_hash)
+    assert addr == validator
+    assert agent_id == 1
+    assert resp == 75
+    assert resp_hash == b"\xbb" * 32
+    assert tag == "audit"
+    assert last_update > 0
+
+
+def test_get_validation_status_unknown(validation_registry):
+    """getValidationStatus reverts for an unknown requestHash."""
+    import pytest
+
+    with pytest.raises(Exception):
+        validation_registry.getValidationStatus(b"\xff" * 32)
+
+
+def test_get_agent_validations(validation_registry, identity_registry, deployer):
+    """getAgentValidations returns the list of requestHashes for an agent."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    h1 = b"\x21" * 32
+    h2 = b"\x22" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/21", h1)
+    validation_registry.validationRequest(validator, 1, "https://req.io/22", h2)
+
+    hashes = validation_registry.getAgentValidations(1)
+    assert len(hashes) == 2
+    assert hashes[0] == h1
+    assert hashes[1] == h2
+
+
+def test_get_validator_requests(validation_registry, identity_registry, deployer):
+    """getValidatorRequests returns the list of requestHashes for a validator."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    h1 = b"\x23" * 32
+    h2 = b"\x24" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/23", h1)
+    validation_registry.validationRequest(validator, 1, "https://req.io/24", h2)
+
+    hashes = validation_registry.getValidatorRequests(validator)
+    assert len(hashes) == 2
+    assert hashes[0] == h1
+    assert hashes[1] == h2
+
+
+# -- C.5: getSummary ----------------------------------------------------------
+
+
+def test_get_summary_basic(validation_registry, identity_registry, deployer):
+    """getSummary returns count and average response score."""
+    import boa
+
+    identity_registry.register()
+
+    v1 = boa.env.generate_address()
+    v2 = boa.env.generate_address()
+    h1 = b"\x30" * 32
+    h2 = b"\x31" * 32
+    validation_registry.validationRequest(v1, 1, "https://req.io/30", h1)
+    validation_registry.validationRequest(v2, 1, "https://req.io/31", h2)
+
+    with boa.env.prank(v1):
+        validation_registry.validationResponse(h1, 80)
+    with boa.env.prank(v2):
+        validation_registry.validationResponse(h2, 60)
+
+    count, avg = validation_registry.getSummary(1)
+    assert count == 2
+    assert avg == 70  # (80 + 60) // 2
+
+
+def test_get_summary_filter_validators(validation_registry, identity_registry, deployer):
+    """getSummary filters by validator addresses when provided."""
+    import boa
+
+    identity_registry.register()
+
+    v1 = boa.env.generate_address()
+    v2 = boa.env.generate_address()
+    h1 = b"\x32" * 32
+    h2 = b"\x33" * 32
+    validation_registry.validationRequest(v1, 1, "https://req.io/32", h1)
+    validation_registry.validationRequest(v2, 1, "https://req.io/33", h2)
+
+    with boa.env.prank(v1):
+        validation_registry.validationResponse(h1, 90)
+    with boa.env.prank(v2):
+        validation_registry.validationResponse(h2, 40)
+
+    count, avg = validation_registry.getSummary(1, [v1])
+    assert count == 1
+    assert avg == 90
+
+
+def test_get_summary_filter_tag(validation_registry, identity_registry, deployer):
+    """getSummary filters by tag when provided."""
+    import boa
+
+    identity_registry.register()
+
+    v1 = boa.env.generate_address()
+    h1 = b"\x34" * 32
+    h2 = b"\x35" * 32
+    validation_registry.validationRequest(v1, 1, "https://req.io/34", h1)
+    validation_registry.validationRequest(v1, 1, "https://req.io/35", h2)
+
+    with boa.env.prank(v1):
+        validation_registry.validationResponse(h1, 100, "", b"\x00" * 32, "security")
+        validation_registry.validationResponse(h2, 50, "", b"\x00" * 32, "quality")
+
+    count, avg = validation_registry.getSummary(1, [], "security")
+    assert count == 1
+    assert avg == 100
+
+
+def test_get_summary_no_responses(validation_registry, identity_registry, deployer):
+    """getSummary returns (0, 0) when no responses exist."""
+    import boa
+
+    identity_registry.register()
+
+    v1 = boa.env.generate_address()
+    h1 = b"\x36" * 32
+    validation_registry.validationRequest(v1, 1, "https://req.io/36", h1)
+
+    count, avg = validation_registry.getSummary(1)
+    assert count == 0
+    assert avg == 0
+
+
+def test_get_summary_empty_agent(validation_registry):
+    """getSummary returns (0, 0) for an agent with no validations."""
+    count, avg = validation_registry.getSummary(999)
+    assert count == 0
+    assert avg == 0
+
+
+def test_get_summary_combined_filters(validation_registry, identity_registry, deployer):
+    """getSummary filters by both validator and tag simultaneously."""
+    import boa
+
+    identity_registry.register()
+
+    v1 = boa.env.generate_address()
+    v2 = boa.env.generate_address()
+    h1 = b"\x37" * 32
+    h2 = b"\x38" * 32
+    h3 = b"\x39" * 32
+    validation_registry.validationRequest(v1, 1, "https://req.io/37", h1)
+    validation_registry.validationRequest(v1, 1, "https://req.io/38", h2)
+    validation_registry.validationRequest(v2, 1, "https://req.io/39", h3)
+
+    with boa.env.prank(v1):
+        validation_registry.validationResponse(h1, 80, "", b"\x00" * 32, "security")
+        validation_registry.validationResponse(h2, 60, "", b"\x00" * 32, "quality")
+    with boa.env.prank(v2):
+        validation_registry.validationResponse(h3, 90, "", b"\x00" * 32, "security")
+
+    # v1 + "security" -> only h1 (score 80)
+    count, avg = validation_registry.getSummary(1, [v1], "security")
+    assert count == 1
+    assert avg == 80
+
+
+# -- C.6: Additional coverage ------------------------------------------------
+
+
+def test_get_validation_status_before_response(validation_registry, identity_registry, deployer):
+    """getValidationStatus returns initial state before any response."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x40" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/40", req_hash)
+
+    addr, agent_id, resp, resp_hash, tag, last_update = validation_registry.getValidationStatus(req_hash)
+    assert addr == validator
+    assert agent_id == 1
+    assert resp == 0
+    assert resp_hash == b"\x00" * 32
+    assert tag == ""
+    assert last_update > 0
+
+
+def test_validation_response_update_verified(validation_registry, identity_registry, deployer):
+    """validationResponse updates are reflected in getValidationStatus."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    req_hash = b"\x41" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/41", req_hash)
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(req_hash, 50, "", b"\xcc" * 32, "partial")
+
+    _, _, resp1, hash1, tag1, _ = validation_registry.getValidationStatus(req_hash)
+    assert resp1 == 50
+    assert hash1 == b"\xcc" * 32
+    assert tag1 == "partial"
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(req_hash, 95, "", b"\xdd" * 32, "final")
+
+    _, _, resp2, hash2, tag2, _ = validation_registry.getValidationStatus(req_hash)
+    assert resp2 == 95
+    assert hash2 == b"\xdd" * 32
+    assert tag2 == "final"
+
+
+def test_validation_response_boundary_values(validation_registry, identity_registry, deployer):
+    """validationResponse accepts boundary values 0 and 100."""
+    import boa
+
+    identity_registry.register()
+
+    validator = boa.env.generate_address()
+    h1 = b"\x42" * 32
+    h2 = b"\x43" * 32
+    validation_registry.validationRequest(validator, 1, "https://req.io/42", h1)
+    validation_registry.validationRequest(validator, 1, "https://req.io/43", h2)
+
+    with boa.env.prank(validator):
+        validation_registry.validationResponse(h1, 0)
+        validation_registry.validationResponse(h2, 100)
+
+    _, _, resp0, _, _, _ = validation_registry.getValidationStatus(h1)
+    _, _, resp100, _, _, _ = validation_registry.getValidationStatus(h2)
+    assert resp0 == 0
+    assert resp100 == 100
