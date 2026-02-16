@@ -25,12 +25,12 @@ def test_validation_request_basic(validation_registry, identity_registry, deploy
 
     validator = boa.env.generate_address()
     req_hash = b"\x01" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/1", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/1", req_hash)
 
     logs = validation_registry.get_logs()
     assert len(logs) == 1
     assert logs[0].validatorAddress == validator
-    assert logs[0].agentId == 1
+    assert logs[0].agentId == 0
     assert logs[0].requestURI == "https://req.io/1"
     assert logs[0].requestHash == req_hash
 
@@ -46,7 +46,7 @@ def test_validation_request_approved_operator(validation_registry, identity_regi
     validator = boa.env.generate_address()
     req_hash = b"\x02" * 32
     with boa.env.prank(operator):
-        validation_registry.validationRequest(validator, 1, "https://req.io/2", req_hash)
+        validation_registry.validationRequest(validator, 0, "https://req.io/2", req_hash)
 
 
 def test_validation_request_not_authorized(validation_registry, identity_registry, deployer):
@@ -62,7 +62,7 @@ def test_validation_request_not_authorized(validation_registry, identity_registr
     with boa.env.prank(stranger):
         # Titanoboa repr() bug with struct-containing HashMaps
         with pytest.raises(Exception):
-            validation_registry.validationRequest(validator, 1, "https://req.io/3", req_hash)
+            validation_registry.validationRequest(validator, 0, "https://req.io/3", req_hash)
 
 
 def test_validation_request_nonexistent_agent(validation_registry, identity_registry):
@@ -85,11 +85,11 @@ def test_validation_request_duplicate_hash(validation_registry, identity_registr
 
     validator = boa.env.generate_address()
     req_hash = b"\x05" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/5", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/5", req_hash)
 
     # Titanoboa repr() bug with struct-containing HashMaps
     with pytest.raises(Exception):
-        validation_registry.validationRequest(validator, 1, "https://req.io/6", req_hash)
+        validation_registry.validationRequest(validator, 0, "https://req.io/6", req_hash)
 
 
 def test_validation_request_zero_validator(validation_registry, identity_registry, deployer):
@@ -103,7 +103,7 @@ def test_validation_request_zero_validator(validation_registry, identity_registr
     req_hash = b"\x06" * 32
     # Titanoboa repr() bug with struct-containing HashMaps
     with pytest.raises(Exception):
-        validation_registry.validationRequest(zero, 1, "https://req.io/7", req_hash)
+        validation_registry.validationRequest(zero, 0, "https://req.io/7", req_hash)
 
 
 # -- C.3: validationResponse --------------------------------------------------
@@ -117,7 +117,7 @@ def test_validation_response_basic(validation_registry, identity_registry, deplo
 
     validator = boa.env.generate_address()
     req_hash = b"\x10" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/10", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/10", req_hash)
 
     with boa.env.prank(validator):
         validation_registry.validationResponse(req_hash, 85, "https://resp.io/1", b"\xaa" * 32, "security")
@@ -126,7 +126,7 @@ def test_validation_response_basic(validation_registry, identity_registry, deplo
     resp_logs = [l for l in logs if type(l).__name__ == "ValidationResponse"]
     assert len(resp_logs) == 1
     assert resp_logs[0].validatorAddress == validator
-    assert resp_logs[0].agentId == 1
+    assert resp_logs[0].agentId == 0
     assert resp_logs[0].requestHash == req_hash
     assert resp_logs[0].response == 85
     assert resp_logs[0].responseURI == "https://resp.io/1"
@@ -143,7 +143,7 @@ def test_validation_response_not_validator(validation_registry, identity_registr
 
     validator = boa.env.generate_address()
     req_hash = b"\x11" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/11", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/11", req_hash)
 
     other = boa.env.generate_address()
     with boa.env.prank(other):
@@ -160,7 +160,7 @@ def test_validation_response_over_100(validation_registry, identity_registry, de
 
     validator = boa.env.generate_address()
     req_hash = b"\x12" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/12", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/12", req_hash)
 
     with boa.env.prank(validator):
         with pytest.raises(Exception):
@@ -183,7 +183,7 @@ def test_validation_response_updatable(validation_registry, identity_registry, d
 
     validator = boa.env.generate_address()
     req_hash = b"\x13" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/13", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/13", req_hash)
 
     with boa.env.prank(validator):
         validation_registry.validationResponse(req_hash, 50, "", b"\x00" * 32, "partial")
@@ -201,14 +201,14 @@ def test_get_validation_status(validation_registry, identity_registry, deployer)
 
     validator = boa.env.generate_address()
     req_hash = b"\x20" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/20", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/20", req_hash)
 
     with boa.env.prank(validator):
         validation_registry.validationResponse(req_hash, 75, "https://resp.io/20", b"\xbb" * 32, "audit")
 
     addr, agent_id, resp, resp_hash, tag, last_update = validation_registry.getValidationStatus(req_hash)
     assert addr == validator
-    assert agent_id == 1
+    assert agent_id == 0
     assert resp == 75
     assert resp_hash == b"\xbb" * 32
     assert tag == "audit"
@@ -232,10 +232,10 @@ def test_get_agent_validations(validation_registry, identity_registry, deployer)
     validator = boa.env.generate_address()
     h1 = b"\x21" * 32
     h2 = b"\x22" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/21", h1)
-    validation_registry.validationRequest(validator, 1, "https://req.io/22", h2)
+    validation_registry.validationRequest(validator, 0, "https://req.io/21", h1)
+    validation_registry.validationRequest(validator, 0, "https://req.io/22", h2)
 
-    hashes = validation_registry.getAgentValidations(1)
+    hashes = validation_registry.getAgentValidations(0)
     assert len(hashes) == 2
     assert hashes[0] == h1
     assert hashes[1] == h2
@@ -250,8 +250,8 @@ def test_get_validator_requests(validation_registry, identity_registry, deployer
     validator = boa.env.generate_address()
     h1 = b"\x23" * 32
     h2 = b"\x24" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/23", h1)
-    validation_registry.validationRequest(validator, 1, "https://req.io/24", h2)
+    validation_registry.validationRequest(validator, 0, "https://req.io/23", h1)
+    validation_registry.validationRequest(validator, 0, "https://req.io/24", h2)
 
     hashes = validation_registry.getValidatorRequests(validator)
     assert len(hashes) == 2
@@ -272,15 +272,15 @@ def test_get_summary_basic(validation_registry, identity_registry, deployer):
     v2 = boa.env.generate_address()
     h1 = b"\x30" * 32
     h2 = b"\x31" * 32
-    validation_registry.validationRequest(v1, 1, "https://req.io/30", h1)
-    validation_registry.validationRequest(v2, 1, "https://req.io/31", h2)
+    validation_registry.validationRequest(v1, 0, "https://req.io/30", h1)
+    validation_registry.validationRequest(v2, 0, "https://req.io/31", h2)
 
     with boa.env.prank(v1):
         validation_registry.validationResponse(h1, 80)
     with boa.env.prank(v2):
         validation_registry.validationResponse(h2, 60)
 
-    count, avg = validation_registry.getSummary(1)
+    count, avg = validation_registry.getSummary(0)
     assert count == 2
     assert avg == 70  # (80 + 60) // 2
 
@@ -295,15 +295,15 @@ def test_get_summary_filter_validators(validation_registry, identity_registry, d
     v2 = boa.env.generate_address()
     h1 = b"\x32" * 32
     h2 = b"\x33" * 32
-    validation_registry.validationRequest(v1, 1, "https://req.io/32", h1)
-    validation_registry.validationRequest(v2, 1, "https://req.io/33", h2)
+    validation_registry.validationRequest(v1, 0, "https://req.io/32", h1)
+    validation_registry.validationRequest(v2, 0, "https://req.io/33", h2)
 
     with boa.env.prank(v1):
         validation_registry.validationResponse(h1, 90)
     with boa.env.prank(v2):
         validation_registry.validationResponse(h2, 40)
 
-    count, avg = validation_registry.getSummary(1, [v1])
+    count, avg = validation_registry.getSummary(0, [v1])
     assert count == 1
     assert avg == 90
 
@@ -317,14 +317,14 @@ def test_get_summary_filter_tag(validation_registry, identity_registry, deployer
     v1 = boa.env.generate_address()
     h1 = b"\x34" * 32
     h2 = b"\x35" * 32
-    validation_registry.validationRequest(v1, 1, "https://req.io/34", h1)
-    validation_registry.validationRequest(v1, 1, "https://req.io/35", h2)
+    validation_registry.validationRequest(v1, 0, "https://req.io/34", h1)
+    validation_registry.validationRequest(v1, 0, "https://req.io/35", h2)
 
     with boa.env.prank(v1):
         validation_registry.validationResponse(h1, 100, "", b"\x00" * 32, "security")
         validation_registry.validationResponse(h2, 50, "", b"\x00" * 32, "quality")
 
-    count, avg = validation_registry.getSummary(1, [], "security")
+    count, avg = validation_registry.getSummary(0, [], "security")
     assert count == 1
     assert avg == 100
 
@@ -337,9 +337,9 @@ def test_get_summary_no_responses(validation_registry, identity_registry, deploy
 
     v1 = boa.env.generate_address()
     h1 = b"\x36" * 32
-    validation_registry.validationRequest(v1, 1, "https://req.io/36", h1)
+    validation_registry.validationRequest(v1, 0, "https://req.io/36", h1)
 
-    count, avg = validation_registry.getSummary(1)
+    count, avg = validation_registry.getSummary(0)
     assert count == 0
     assert avg == 0
 
@@ -362,9 +362,9 @@ def test_get_summary_combined_filters(validation_registry, identity_registry, de
     h1 = b"\x37" * 32
     h2 = b"\x38" * 32
     h3 = b"\x39" * 32
-    validation_registry.validationRequest(v1, 1, "https://req.io/37", h1)
-    validation_registry.validationRequest(v1, 1, "https://req.io/38", h2)
-    validation_registry.validationRequest(v2, 1, "https://req.io/39", h3)
+    validation_registry.validationRequest(v1, 0, "https://req.io/37", h1)
+    validation_registry.validationRequest(v1, 0, "https://req.io/38", h2)
+    validation_registry.validationRequest(v2, 0, "https://req.io/39", h3)
 
     with boa.env.prank(v1):
         validation_registry.validationResponse(h1, 80, "", b"\x00" * 32, "security")
@@ -373,7 +373,7 @@ def test_get_summary_combined_filters(validation_registry, identity_registry, de
         validation_registry.validationResponse(h3, 90, "", b"\x00" * 32, "security")
 
     # v1 + "security" -> only h1 (score 80)
-    count, avg = validation_registry.getSummary(1, [v1], "security")
+    count, avg = validation_registry.getSummary(0, [v1], "security")
     assert count == 1
     assert avg == 80
 
@@ -389,11 +389,11 @@ def test_get_validation_status_before_response(validation_registry, identity_reg
 
     validator = boa.env.generate_address()
     req_hash = b"\x40" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/40", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/40", req_hash)
 
     addr, agent_id, resp, resp_hash, tag, last_update = validation_registry.getValidationStatus(req_hash)
     assert addr == validator
-    assert agent_id == 1
+    assert agent_id == 0
     assert resp == 0
     assert resp_hash == b"\x00" * 32
     assert tag == ""
@@ -408,7 +408,7 @@ def test_validation_response_update_verified(validation_registry, identity_regis
 
     validator = boa.env.generate_address()
     req_hash = b"\x41" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/41", req_hash)
+    validation_registry.validationRequest(validator, 0, "https://req.io/41", req_hash)
 
     with boa.env.prank(validator):
         validation_registry.validationResponse(req_hash, 50, "", b"\xcc" * 32, "partial")
@@ -436,8 +436,8 @@ def test_validation_response_boundary_values(validation_registry, identity_regis
     validator = boa.env.generate_address()
     h1 = b"\x42" * 32
     h2 = b"\x43" * 32
-    validation_registry.validationRequest(validator, 1, "https://req.io/42", h1)
-    validation_registry.validationRequest(validator, 1, "https://req.io/43", h2)
+    validation_registry.validationRequest(validator, 0, "https://req.io/42", h1)
+    validation_registry.validationRequest(validator, 0, "https://req.io/43", h2)
 
     with boa.env.prank(validator):
         validation_registry.validationResponse(h1, 0)

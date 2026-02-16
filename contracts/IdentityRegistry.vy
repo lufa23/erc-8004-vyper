@@ -146,14 +146,14 @@ def __init__():
     """
     ownable.__init__()
     erc721.__init__(
-        "ERC8004IdentityRegistry",
+        "AgentIdentity",
         "AGENT",
         "",
         "ERC8004IdentityRegistry",
         "1",
     )
 
-    self._next_id = 1
+    self._next_id = 0
 
     hashed_name: bytes32 = keccak256("ERC8004IdentityRegistry")
     hashed_version: bytes32 = keccak256("1")
@@ -461,8 +461,8 @@ def transferFrom(from_: address, to: address, tokenId: uint256):
     @param tokenId The 32-byte token identifier.
     """
     assert erc721._is_approved_or_owner(msg.sender, tokenId), "erc721: caller is not token owner or approved"
-    erc721._transfer(from_, to, tokenId)
     self._clear_agent_wallet(tokenId)
+    erc721._transfer(from_, to, tokenId)
 
 
 @external
@@ -484,8 +484,8 @@ def safeTransferFrom(from_: address, to: address, tokenId: uint256, data: Bytes[
            with no specified format sent to `to`.
     """
     assert erc721._is_approved_or_owner(msg.sender, tokenId), "erc721: caller is not token owner or approved"
-    erc721._safe_transfer(from_, to, tokenId, data)
     self._clear_agent_wallet(tokenId)
+    erc721._safe_transfer(from_, to, tokenId, data)
 
 
 @external

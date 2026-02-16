@@ -101,6 +101,7 @@ def __init__(identityRegistry_: address):
             to the Identity Registry contract.
     @param identityRegistry_ The address of the Identity Registry.
     """
+    assert identityRegistry_ != empty(address), "ReputationRegistry: bad identity"
     _IDENTITY_REGISTRY = IIdentityRegistry(identityRegistry_)
 
 

@@ -55,10 +55,10 @@ def _decode_metadata_set(raw_log):
 
 
 def test_register_no_args(identity_registry, deployer):
-    """register() with no params: agentId=1, owner=sender, agentWallet=sender."""
+    """register() with no params: agentId=0, owner=sender, agentWallet=sender."""
     agent_id = identity_registry.register()
-    assert agent_id == 1
-    assert identity_registry.ownerOf(1) == deployer
+    assert agent_id == 0
+    assert identity_registry.ownerOf(0) == deployer
     assert identity_registry.balanceOf(deployer) == 1
     assert identity_registry.totalSupply() == 1
 
@@ -67,13 +67,13 @@ def test_register_with_uri(identity_registry, deployer):
     """register("https://example.com") stores the URI."""
     uri = "https://example.com/agent.json"
     agent_id = identity_registry.register(uri)
-    assert agent_id == 1
+    assert agent_id == 0
 
     # Verify via Registered event since tokenURI is not yet implemented
     registered = _filter_logs(identity_registry, "Registered")
     assert len(registered) == 1
     assert registered[0].agentURI == uri
-    assert registered[0].agentId == 1
+    assert registered[0].agentId == 0
     assert registered[0].owner == deployer
 
 
@@ -89,14 +89,14 @@ def test_register_rejects_agent_wallet_key(identity_registry):
 
 
 def test_register_increments_id(identity_registry, deployer):
-    """Two register() calls produce agentId 1 and 2."""
+    """Two register() calls produce agentId 0 and 1."""
     id1 = identity_registry.register()
     id2 = identity_registry.register()
-    assert id1 == 1
-    assert id2 == 2
+    assert id1 == 0
+    assert id2 == 1
     assert identity_registry.totalSupply() == 2
+    assert identity_registry.ownerOf(0) == deployer
     assert identity_registry.ownerOf(1) == deployer
-    assert identity_registry.ownerOf(2) == deployer
 
 
 def test_register_event_order(identity_registry, deployer):
@@ -111,11 +111,11 @@ def test_register_event_order(identity_registry, deployer):
     transfer = logs[0]
     assert transfer.sender == "0x" + "00" * 20  # from zero address (mint)
     assert transfer.receiver == deployer
-    assert transfer.token_id == 1
+    assert transfer.token_id == 0
 
     # Verify MetadataSet (agentWallet)
     ms = _decode_metadata_set(logs[1])
-    assert ms["agentId"] == 1
+    assert ms["agentId"] == 0
     assert ms["metadataKey"] == "agentWallet"
     assert ms["indexedKeyHash"] == AGENT_WALLET_KEY_HASH
     # Value is the 20-byte packed address
@@ -123,7 +123,7 @@ def test_register_event_order(identity_registry, deployer):
 
     # Verify Registered
     reg = logs[2]
-    assert reg.agentId == 1
+    assert reg.agentId == 0
     assert reg.agentURI == ""
     assert reg.owner == deployer
 
@@ -135,7 +135,7 @@ def test_register_with_metadata_events(identity_registry, deployer):
         ("key2", b"\xaa\xbb"),
     ]
     agent_id = identity_registry.register("https://agent.io", metadata)
-    assert agent_id == 1
+    assert agent_id == 0
 
     logs = _get_logs(identity_registry)
     names = [_log_name(l) for l in logs]
@@ -151,7 +151,7 @@ def test_register_with_metadata_events(identity_registry, deployer):
     ms_key1 = _decode_metadata_set(logs[2])
     assert ms_key1["metadataKey"] == "key1"
     assert ms_key1["metadataValue"] == b"\x01\x02\x03"
-    assert ms_key1["agentId"] == 1
+    assert ms_key1["agentId"] == 0
 
     ms_key2 = _decode_metadata_set(logs[3])
     assert ms_key2["metadataKey"] == "key2"
@@ -168,17 +168,17 @@ def test_register_with_metadata_events(identity_registry, deployer):
 def test_set_agent_uri(identity_registry, deployer):
     """setAgentURI updates the URI, readable via tokenURI, emits URIUpdated."""
     identity_registry.register("https://old.io")
-    identity_registry.setAgentURI(1, "https://new.io")
+    identity_registry.setAgentURI(0, "https://new.io")
 
     # Capture logs before any view call (view calls reset the computation)
     logs = _get_logs(identity_registry)
     uri_events = [l for l in logs if _log_name(l) == "URIUpdated"]
     assert len(uri_events) == 1
-    assert uri_events[0].agentId == 1
+    assert uri_events[0].agentId == 0
     assert uri_events[0].newURI == "https://new.io"
     assert uri_events[0].updatedBy == deployer
 
-    assert identity_registry.tokenURI(1) == "https://new.io"
+    assert identity_registry.tokenURI(0) == "https://new.io"
 
 
 def test_set_agent_uri_access_control(identity_registry):
@@ -189,7 +189,7 @@ def test_set_agent_uri_access_control(identity_registry):
     other = boa.env.generate_address()
     with boa.env.prank(other):
         with boa.reverts("IdentityRegistry: caller is not owner or approved"):
-            identity_registry.setAgentURI(1, "https://evil.io")
+            identity_registry.setAgentURI(0, "https://evil.io")
 
 
 def test_token_uri_nonexistent(identity_registry):
@@ -203,28 +203,28 @@ def test_token_uri_nonexistent(identity_registry):
 def test_token_uri_returns_stored_value(identity_registry):
     """tokenURI returns the URI set during register()."""
     identity_registry.register("https://example.com/agent.json")
-    assert identity_registry.tokenURI(1) == "https://example.com/agent.json"
+    assert identity_registry.tokenURI(0) == "https://example.com/agent.json"
 
 
 def test_set_metadata(identity_registry):
     """setMetadata stores a value, getMetadata retrieves it."""
     identity_registry.register()
-    identity_registry.setMetadata(1, "description", b"An AI agent")
+    identity_registry.setMetadata(0, "description", b"An AI agent")
 
-    result = identity_registry.getMetadata(1, "description")
+    result = identity_registry.getMetadata(0, "description")
     assert result == b"An AI agent"
 
 
 def test_set_metadata_emits_event(identity_registry, deployer):
     """setMetadata emits MetadataSet with correct fields."""
     identity_registry.register()
-    identity_registry.setMetadata(1, "version", b"\x01")
+    identity_registry.setMetadata(0, "version", b"\x01")
 
     logs = _get_logs(identity_registry)
     ms_events = [l for l in logs if _log_name(l) == "MetadataSet"]
     # Last MetadataSet is from setMetadata (earlier ones from register)
     ms = _decode_metadata_set(ms_events[-1])
-    assert ms["agentId"] == 1
+    assert ms["agentId"] == 0
     assert ms["metadataKey"] == "version"
     assert ms["metadataValue"] == b"\x01"
 
@@ -235,7 +235,7 @@ def test_set_metadata_rejects_agent_wallet(identity_registry):
 
     identity_registry.register()
     with boa.reverts("IdentityRegistry: agentWallet is reserved"):
-        identity_registry.setMetadata(1, "agentWallet", b"\x01")
+        identity_registry.setMetadata(0, "agentWallet", b"\x01")
 
 
 def test_set_metadata_access_control(identity_registry):
@@ -246,13 +246,13 @@ def test_set_metadata_access_control(identity_registry):
     other = boa.env.generate_address()
     with boa.env.prank(other):
         with boa.reverts("IdentityRegistry: caller is not owner or approved"):
-            identity_registry.setMetadata(1, "key", b"val")
+            identity_registry.setMetadata(0, "key", b"val")
 
 
 def test_get_metadata_default(identity_registry):
     """getMetadata returns empty bytes for an unset key."""
     identity_registry.register()
-    result = identity_registry.getMetadata(1, "nonexistent")
+    result = identity_registry.getMetadata(0, "nonexistent")
     assert result == b""
 
 
@@ -295,7 +295,7 @@ def _sign_agent_wallet(
 def test_get_agent_wallet_after_register(identity_registry, deployer):
     """After register(), getAgentWallet returns msg.sender."""
     identity_registry.register()
-    assert identity_registry.getAgentWallet(1) == deployer
+    assert identity_registry.getAgentWallet(0) == deployer
 
 
 def test_set_agent_wallet_eoa(identity_registry, deployer):
@@ -313,15 +313,15 @@ def test_set_agent_wallet_eoa(identity_registry, deployer):
 
     sig = _sign_agent_wallet(
         private_key=wallet_key,
-        agent_id=1,
+        agent_id=0,
         new_wallet=new_wallet,
         owner=deployer,
         deadline=deadline,
         contract_address=identity_registry.address,
     )
 
-    identity_registry.setAgentWallet(1, new_wallet, deadline, sig)
-    assert identity_registry.getAgentWallet(1) == new_wallet
+    identity_registry.setAgentWallet(0, new_wallet, deadline, sig)
+    assert identity_registry.getAgentWallet(0) == new_wallet
 
 
 def test_set_agent_wallet_expired_deadline(identity_registry, deployer):
@@ -340,7 +340,7 @@ def test_set_agent_wallet_expired_deadline(identity_registry, deployer):
 
     sig = _sign_agent_wallet(
         private_key=wallet_key,
-        agent_id=1,
+        agent_id=0,
         new_wallet=new_wallet,
         owner=deployer,
         deadline=deadline,
@@ -348,7 +348,7 @@ def test_set_agent_wallet_expired_deadline(identity_registry, deployer):
     )
 
     with boa.reverts("IdentityRegistry: expired deadline"):
-        identity_registry.setAgentWallet(1, new_wallet, deadline, sig)
+        identity_registry.setAgentWallet(0, new_wallet, deadline, sig)
 
 
 def test_set_agent_wallet_deadline_too_far(identity_registry, deployer):
@@ -367,7 +367,7 @@ def test_set_agent_wallet_deadline_too_far(identity_registry, deployer):
 
     sig = _sign_agent_wallet(
         private_key=wallet_key,
-        agent_id=1,
+        agent_id=0,
         new_wallet=new_wallet,
         owner=deployer,
         deadline=deadline,
@@ -375,7 +375,7 @@ def test_set_agent_wallet_deadline_too_far(identity_registry, deployer):
     )
 
     with boa.reverts("IdentityRegistry: deadline too far"):
-        identity_registry.setAgentWallet(1, new_wallet, deadline, sig)
+        identity_registry.setAgentWallet(0, new_wallet, deadline, sig)
 
 
 def test_set_agent_wallet_wrong_signer(identity_registry, deployer):
@@ -396,7 +396,7 @@ def test_set_agent_wallet_wrong_signer(identity_registry, deployer):
     # Sign with wrong_key instead of wallet_key
     sig = _sign_agent_wallet(
         private_key=wrong_key,
-        agent_id=1,
+        agent_id=0,
         new_wallet=new_wallet,
         owner=deployer,
         deadline=deadline,
@@ -404,7 +404,7 @@ def test_set_agent_wallet_wrong_signer(identity_registry, deployer):
     )
 
     with boa.reverts("IdentityRegistry: invalid wallet signature"):
-        identity_registry.setAgentWallet(1, new_wallet, deadline, sig)
+        identity_registry.setAgentWallet(0, new_wallet, deadline, sig)
 
 
 def test_set_agent_wallet_access_control(identity_registry, deployer):
@@ -421,7 +421,7 @@ def test_set_agent_wallet_access_control(identity_registry, deployer):
 
     sig = _sign_agent_wallet(
         private_key=wallet_key,
-        agent_id=1,
+        agent_id=0,
         new_wallet=new_wallet,
         owner=deployer,
         deadline=deadline,
@@ -431,7 +431,7 @@ def test_set_agent_wallet_access_control(identity_registry, deployer):
     other = boa.env.generate_address()
     with boa.env.prank(other):
         with boa.reverts("IdentityRegistry: caller is not owner or approved"):
-            identity_registry.setAgentWallet(1, new_wallet, deadline, sig)
+            identity_registry.setAgentWallet(0, new_wallet, deadline, sig)
 
 
 def test_set_agent_wallet_zero_address(identity_registry, deployer):
@@ -443,16 +443,16 @@ def test_set_agent_wallet_zero_address(identity_registry, deployer):
     zero = "0x" + "00" * 20
     deadline = boa.env.evm.patch.timestamp + 120
     with boa.reverts("IdentityRegistry: bad wallet"):
-        identity_registry.setAgentWallet(1, zero, deadline, b"\x00" * 65)
+        identity_registry.setAgentWallet(0, zero, deadline, b"\x00" * 65)
 
 
 def test_unset_agent_wallet(identity_registry, deployer):
     """unsetAgentWallet clears the wallet to address(0)."""
     identity_registry.register()
-    assert identity_registry.getAgentWallet(1) == deployer
+    assert identity_registry.getAgentWallet(0) == deployer
 
-    identity_registry.unsetAgentWallet(1)
-    assert identity_registry.getAgentWallet(1) == "0x" + "00" * 20
+    identity_registry.unsetAgentWallet(0)
+    assert identity_registry.getAgentWallet(0) == "0x" + "00" * 20
 
 
 def test_unset_agent_wallet_access_control(identity_registry):
@@ -464,7 +464,7 @@ def test_unset_agent_wallet_access_control(identity_registry):
     other = boa.env.generate_address()
     with boa.env.prank(other):
         with boa.reverts("IdentityRegistry: caller is not owner or approved"):
-            identity_registry.unsetAgentWallet(1)
+            identity_registry.unsetAgentWallet(0)
 
 
 # ── Task 1.6: Transfer wrappers ─────────────────────────────────────
@@ -475,13 +475,13 @@ def test_transfer_clears_wallet(identity_registry, deployer):
     import boa
 
     identity_registry.register()
-    assert identity_registry.getAgentWallet(1) == deployer
+    assert identity_registry.getAgentWallet(0) == deployer
 
     recipient = boa.env.generate_address()
-    identity_registry.transferFrom(deployer, recipient, 1)
+    identity_registry.transferFrom(deployer, recipient, 0)
 
-    assert identity_registry.ownerOf(1) == recipient
-    assert identity_registry.getAgentWallet(1) == "0x" + "00" * 20
+    assert identity_registry.ownerOf(0) == recipient
+    assert identity_registry.getAgentWallet(0) == "0x" + "00" * 20
 
 
 def test_safe_transfer_clears_wallet(identity_registry, deployer):
@@ -489,13 +489,13 @@ def test_safe_transfer_clears_wallet(identity_registry, deployer):
     import boa
 
     identity_registry.register()
-    assert identity_registry.getAgentWallet(1) == deployer
+    assert identity_registry.getAgentWallet(0) == deployer
 
     recipient = boa.env.generate_address()
-    identity_registry.safeTransferFrom(deployer, recipient, 1)
+    identity_registry.safeTransferFrom(deployer, recipient, 0)
 
-    assert identity_registry.ownerOf(1) == recipient
-    assert identity_registry.getAgentWallet(1) == "0x" + "00" * 20
+    assert identity_registry.ownerOf(0) == recipient
+    assert identity_registry.getAgentWallet(0) == "0x" + "00" * 20
 
 
 def test_transfer_access_control(identity_registry, deployer):
@@ -508,7 +508,7 @@ def test_transfer_access_control(identity_registry, deployer):
     recipient = boa.env.generate_address()
     with boa.env.prank(other):
         with boa.reverts("erc721: caller is not token owner or approved"):
-            identity_registry.transferFrom(deployer, recipient, 1)
+            identity_registry.transferFrom(deployer, recipient, 0)
 
 
 def test_safe_transfer_with_data(identity_registry, deployer):
@@ -518,10 +518,10 @@ def test_safe_transfer_with_data(identity_registry, deployer):
     identity_registry.register()
 
     recipient = boa.env.generate_address()
-    identity_registry.safeTransferFrom(deployer, recipient, 1, b"\xde\xad")
+    identity_registry.safeTransferFrom(deployer, recipient, 0, b"\xde\xad")
 
-    assert identity_registry.ownerOf(1) == recipient
-    assert identity_registry.getAgentWallet(1) == "0x" + "00" * 20
+    assert identity_registry.ownerOf(0) == recipient
+    assert identity_registry.getAgentWallet(0) == "0x" + "00" * 20
 
 
 def test_transfer_preserves_metadata(identity_registry, deployer):
@@ -534,18 +534,18 @@ def test_transfer_preserves_metadata(identity_registry, deployer):
     ]
     identity_registry.register("https://agent.io", metadata)
 
-    assert identity_registry.getMetadata(1, "description") == b"An AI agent"
-    assert identity_registry.getMetadata(1, "version") == b"\x01"
-    assert identity_registry.getAgentWallet(1) == deployer
+    assert identity_registry.getMetadata(0, "description") == b"An AI agent"
+    assert identity_registry.getMetadata(0, "version") == b"\x01"
+    assert identity_registry.getAgentWallet(0) == deployer
 
     recipient = boa.env.generate_address()
-    identity_registry.transferFrom(deployer, recipient, 1)
+    identity_registry.transferFrom(deployer, recipient, 0)
 
     # Wallet cleared
-    assert identity_registry.getAgentWallet(1) == "0x" + "00" * 20
+    assert identity_registry.getAgentWallet(0) == "0x" + "00" * 20
     # Metadata preserved
-    assert identity_registry.getMetadata(1, "description") == b"An AI agent"
-    assert identity_registry.getMetadata(1, "version") == b"\x01"
+    assert identity_registry.getMetadata(0, "description") == b"An AI agent"
+    assert identity_registry.getMetadata(0, "version") == b"\x01"
 
 
 # ── Phase A.1: isAuthorizedOrOwner ─────────────────────────────────
@@ -554,7 +554,7 @@ def test_transfer_preserves_metadata(identity_registry, deployer):
 def test_is_authorized_or_owner_owner(identity_registry, deployer):
     """isAuthorizedOrOwner returns True for the owner."""
     identity_registry.register()
-    assert identity_registry.isAuthorizedOrOwner(deployer, 1) is True
+    assert identity_registry.isAuthorizedOrOwner(deployer, 0) is True
 
 
 def test_is_authorized_or_owner_approved(identity_registry, deployer):
@@ -563,8 +563,8 @@ def test_is_authorized_or_owner_approved(identity_registry, deployer):
 
     identity_registry.register()
     approved = boa.env.generate_address()
-    identity_registry.approve(approved, 1)
-    assert identity_registry.isAuthorizedOrOwner(approved, 1) is True
+    identity_registry.approve(approved, 0)
+    assert identity_registry.isAuthorizedOrOwner(approved, 0) is True
 
 
 def test_is_authorized_or_owner_operator(identity_registry, deployer):
@@ -574,7 +574,7 @@ def test_is_authorized_or_owner_operator(identity_registry, deployer):
     identity_registry.register()
     operator = boa.env.generate_address()
     identity_registry.setApprovalForAll(operator, True)
-    assert identity_registry.isAuthorizedOrOwner(operator, 1) is True
+    assert identity_registry.isAuthorizedOrOwner(operator, 0) is True
 
 
 def test_is_authorized_or_owner_stranger(identity_registry, deployer):
@@ -583,7 +583,7 @@ def test_is_authorized_or_owner_stranger(identity_registry, deployer):
 
     identity_registry.register()
     stranger = boa.env.generate_address()
-    assert identity_registry.isAuthorizedOrOwner(stranger, 1) is False
+    assert identity_registry.isAuthorizedOrOwner(stranger, 0) is False
 
 
 # ── Phase A.2: getVersion ──────────────────────────────────────────
