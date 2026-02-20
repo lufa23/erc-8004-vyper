@@ -39,4 +39,4 @@ mox test
 
 ## License
 
-[CC0-1.0](LICENSE)
+[MIT](LICENSE)
