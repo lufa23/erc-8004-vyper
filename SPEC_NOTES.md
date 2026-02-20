@@ -202,7 +202,10 @@ erc-8004-vyper/
 │   ├── test_identity_registry.py
 │   ├── test_reputation_registry.py
 │   └── test_validation_registry.py
+├── .gitignore
+├── .pre-commit-config.yaml
 ├── moccasin.toml
+├── pyproject.toml
 ├── SPEC_NOTES.md
 └── README.md
 ```
