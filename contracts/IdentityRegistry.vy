@@ -467,7 +467,7 @@ def transferFrom(from_: address, to: address, tokenId: uint256):
     @param to The 20-byte receiver address.
     @param tokenId The 32-byte token identifier.
     """
-    assert erc721._is_approved_or_owner(msg.sender, tokenId), "erc721: caller is not token owner or approved"
+    assert erc721._is_approved_or_owner(msg.sender, tokenId), "IdentityRegistry: caller is not owner or approved"
     self._clear_agent_wallet(tokenId)
     erc721._transfer(from_, to, tokenId)
 
@@ -490,7 +490,7 @@ def safeTransferFrom(from_: address, to: address, tokenId: uint256, data: Bytes[
     @param data The maximum 1,024-byte additional data
            with no specified format sent to `to`.
     """
-    assert erc721._is_approved_or_owner(msg.sender, tokenId), "erc721: caller is not token owner or approved"
+    assert erc721._is_approved_or_owner(msg.sender, tokenId), "IdentityRegistry: caller is not owner or approved"
     self._clear_agent_wallet(tokenId)
     erc721._safe_transfer(from_, to, tokenId, data)
 

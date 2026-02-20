@@ -525,7 +525,7 @@ def test_transfer_access_control(identity_registry, deployer):
     other = boa.env.generate_address()
     recipient = boa.env.generate_address()
     with boa.env.prank(other):
-        with boa.reverts("erc721: caller is not token owner or approved"):
+        with boa.reverts("IdentityRegistry: caller is not owner or approved"):
             identity_registry.transferFrom(deployer, recipient, 0)
 
 
