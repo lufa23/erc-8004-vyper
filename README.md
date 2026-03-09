@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="vyper-logo.png" width="140" alt="Vyper logo">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="vyper-logo-dark.png">
+    <img src="vyper-logo.png" width="140" alt="Vyper logo">
+  </picture>
 </p>
 
 # erc-8004-vyper
